@@ -7,6 +7,35 @@ deletes, moves or renames anything on the iPhone.
 Built for the case where iCloud is on the free 5 GB tier, so nothing is in the cloud and
 the phone is the only copy.
 
+## Quick start
+
+**Prerequisites:** Python 3.11+, iTunes or the Apple Devices app installed (provides the
+Windows USB drivers), and a direct USB cable — no hub or dock.
+
+**Setup:**
+```
+pip install pymobiledevice3
+```
+
+**Scripts:** `iphone_export.py` (inventory, copy, SHA-256 manifest, verification, resumable,
+read-only) and `test_export.py` (test suite, no phone needed).
+
+**Workflow:**
+
+1. Run `--dry-run` first to check the inventory and total size.
+   ```
+   python iphone_export.py --dest D:\iphone-backup --dry-run
+   ```
+2. Run the export.
+   ```
+   python iphone_export.py --dest D:\iphone-backup
+   ```
+3. Confirm `VERIFY.txt` shows `0` for failed, missing and size mismatch.
+4. Play 5 random videos from the PC copy.
+5. Copy the folder to an external drive — a second copy.
+6. Delete photos on the iPhone in batches, then **empty Recently Deleted**
+   (Photos > Albums > Recently Deleted > Delete All). The space is not freed until you do.
+
 ## What it does
 
 - Recursive inventory of `/DCIM` (photos, videos, HEIC, Live Photo `.MOV` pairs) before copying.
