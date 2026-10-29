@@ -5,6 +5,8 @@ Pulls /DCIM (camera roll) from a USB-connected, trusted iPhone to a local folder
 writes a SHA-256 manifest, and verifies every file before you delete anything on
 the phone. It NEVER deletes, moves or modifies anything on the device.
 
+This is the command-line front end; app.py is the same engine with a GUI.
+
 Requirements (Windows / macOS / Linux):
     pip install pymobiledevice3
     Windows also needs Apple Mobile Device drivers: install iTunes from apple.com
@@ -21,13 +23,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import csv
-import hashlib
-import os
 import posixpath
 import sys
 import time
-from datetime import datetime
 from pathlib import Path
 
 try:
@@ -37,27 +35,10 @@ try:
 except ImportError:
     sys.exit("pymobiledevice3 is not installed. Run: pip install pymobiledevice3")
 
-MEDIA_EXT = {
-    ".jpg", ".jpeg", ".heic", ".heif", ".png", ".gif", ".tif", ".tiff",
-    ".dng", ".mov", ".mp4", ".m4v", ".avi", ".aae",
-}
-CHUNK = 4 * 1024 * 1024
+import exporter
+from exporter import MEDIA_EXT, human
 
-
-def human(n: float) -> str:
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if n < 1024 or unit == "TB":
-            return f"{n:.1f} {unit}"
-        n /= 1024
-    return f"{n:.1f} TB"
-
-
-def sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(CHUNK), b""):
-            h.update(chunk)
-    return h.hexdigest()
+VIDEO_EXT = {".mov", ".mp4", ".m4v", ".avi"}
 
 
 async def pick_device(udid: str | None):
@@ -110,11 +91,12 @@ async def walk(afc: AfcService, root: str) -> list[dict]:
                 continue
             if Path(name).suffix.lower() not in MEDIA_EXT:
                 continue
+            mtime = st.get("st_mtime")
             items.append({
                 "path": full,
                 "name": name,
                 "size": int(st["st_size"]),
-                "mtime": int(st["st_mtime"].timestamp()) if st.get("st_mtime") else 0,
+                "mtime": int(mtime.timestamp()) if hasattr(mtime, "timestamp") else int(mtime or 0),
             })
 
     await rec(root)
@@ -142,9 +124,8 @@ async def main() -> int:
             return 1
 
         total = sum(i["size"] for i in items)
-        photos = sum(1 for i in items if Path(i["name"]).suffix.lower() not in {".mov", ".mp4", ".m4v", ".avi"})
-        videos = len(items) - photos
-        print(f"found: {len(items)} files ({photos} images, {videos} videos), {human(total)}")
+        videos = sum(1 for i in items if Path(i["name"]).suffix.lower() in VIDEO_EXT)
+        print(f"found: {len(items)} files ({len(items) - videos} images, {videos} videos), {human(total)}")
         print(f"dest : {dest_root}")
 
         free = 0
@@ -167,94 +148,29 @@ async def main() -> int:
         # Stable per-device folder so re-runs resume instead of duplicating the library.
         out_dir = dest_root / serial
         out_dir.mkdir(parents=True, exist_ok=True)
-        manifest_path = out_dir / "manifest.csv"
-        log_path = out_dir / "export.log"
         print(f"target: {out_dir}  (re-run resumes; existing complete files are skipped)")
 
-        done = copied = skipped = failed = 0
-        copied_bytes = 0
         started = time.time()
-        rows: list[list] = []
 
-        with manifest_path.open("w", newline="", encoding="utf-8") as mf, \
-                log_path.open("a", encoding="utf-8") as log:
-            w = csv.writer(mf)
-            w.writerow(["device_path", "local_path", "size", "mtime_epoch", "sha256", "status"])
+        def on_progress(p):
+            if p["done"] % 25 and p["done"] != p["total"]:
+                return
+            rate = p["bytes"] / max(time.time() - started, 1)
+            print(f"  {p['done']}/{p['total']}  copied={p['copied']} resumed={p['resumed']} "
+                  f"failed={p['failed']}  {human(rate)}/s", flush=True)
 
-            for idx, item in enumerate(items, 1):
-                rel = item["path"].lstrip("/").replace("/", os.sep)
-                local = out_dir / rel
-                local.parent.mkdir(parents=True, exist_ok=True)
-
-                if local.exists() and local.stat().st_size == item["size"]:
-                    rows.append([item["path"], str(local), item["size"], item["mtime"],
-                                 sha256_file(local), "resumed"])
-                    skipped += 1
-                    done += 1
-                    continue
-
-                tmp = local.with_suffix(local.suffix + ".part")
-                try:
-                    await afc.pull(item["path"], str(tmp), progress_bar=False)
-                    if tmp.stat().st_size != item["size"]:
-                        raise IOError(f"size {tmp.stat().st_size} != {item['size']}")
-                    tmp.replace(local)
-                    os.utime(local, (time.time(), item["mtime"] or time.time()))
-                    rows.append([item["path"], str(local), item["size"], item["mtime"],
-                                 sha256_file(local), "copied"])
-                    copied += 1
-                    copied_bytes += item["size"]
-                except Exception as exc:
-                    tmp.unlink(missing_ok=True)
-                    rows.append([item["path"], str(local), item["size"], item["mtime"], "", f"FAILED: {exc}"])
-                    failed += 1
-                    log.write(f"FAILED {item['path']}: {exc}\n")
-                done += 1
-
-                if done % 25 == 0 or done == len(items):
-                    rate = copied_bytes / max(time.time() - started, 1)
-                    print(f"  {done}/{len(items)}  copied={copied} skipped={skipped} failed={failed}  "
-                          f"{human(rate)}/s", flush=True)
-                    mf.flush()
-
-            for row in rows:
-                w.writerow(row)
-
-        # ---- verification pass ----
-        missing, mismatch = [], []
-        for item in items:
-            rel = item["path"].lstrip("/").replace("/", os.sep)
-            local = out_dir / rel
-            if not local.exists():
-                missing.append(item["path"])
-            elif local.stat().st_size != item["size"]:
-                mismatch.append(item["path"])
-
-        report = out_dir / "VERIFY.txt"
-        with report.open("w", encoding="utf-8") as fh:
-            fh.write(f"device      : {serial}\n")
-            fh.write(f"source      : {args.root}\n")
-            fh.write(f"finished    : {datetime.now().isoformat(timespec='seconds')}\n")
-            fh.write(f"device files: {len(items)}\n")
-            fh.write(f"device bytes: {total} ({human(total)})\n")
-            fh.write(f"copied      : {copied}\n")
-            fh.write(f"resumed     : {skipped}\n")
-            fh.write(f"failed      : {failed}\n")
-            fh.write(f"missing     : {len(missing)}\n")
-            fh.write(f"size mismatch: {len(mismatch)}\n")
-            if missing:
-                fh.write("\nMISSING:\n" + "\n".join(missing[:200]) + "\n")
-            if mismatch:
-                fh.write("\nMISMATCH:\n" + "\n".join(mismatch[:200]) + "\n")
-            fh.write("\nDo NOT delete anything from the phone unless failed/missing/mismatch are all 0,\n")
-            fh.write("you have opened several random videos from this folder, and the folder is copied\n")
-            fh.write("to a second drive.\n")
+        result = await exporter.copy_items(afc, items, out_dir, on_progress=on_progress)
+        verification = exporter.verify_items(items, out_dir)
+        exporter.write_manifest(result["rows"], out_dir / "manifest.csv")
+        exporter.write_report(out_dir / "VERIFY.txt", serial=serial, source=args.root,
+                              copy_result=result, verification=verification)
 
         print()
-        print(f"copied {copied}, resumed {skipped}, failed {failed}, missing {len(missing)}, mismatch {len(mismatch)}")
-        print(f"manifest: {manifest_path}")
-        print(f"report  : {report}")
-        if failed or missing or mismatch:
+        print(f"copied {result['copied']}, resumed {result['resumed']}, failed {result['failed']}, "
+              f"missing {len(verification['missing'])}, mismatch {len(verification['mismatch'])}")
+        print(f"manifest: {out_dir / 'manifest.csv'}")
+        print(f"report  : {out_dir / 'VERIFY.txt'}")
+        if result["failed"] or not verification["ok"]:
             print("\nVERIFICATION FAILED - do not delete anything from the phone.")
             return 2
         print("\nAll files verified. Now: (1) play 5 random videos from this folder,")

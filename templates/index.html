@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>iPhone Photo Export</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+    --text:#e6e9ef; --muted:#9aa3b2; --accent:#3b82f6; --accent2:#22c55e;
+    --danger:#ef4444; --warn:#f59e0b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.45 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+       background:var(--bg);color:var(--text);height:100vh;display:flex;flex-direction:column}
+  header{display:flex;align-items:center;gap:14px;padding:10px 16px;background:var(--panel);
+         border-bottom:1px solid var(--line);flex-wrap:wrap}
+  header h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.2px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--danger);display:inline-block;margin-right:6px}
+  .dot.on{background:var(--accent2)}
+  .muted{color:var(--muted)}
+  .grow{flex:1}
+  button{background:var(--panel2);color:var(--text);border:1px solid var(--line);
+         padding:7px 12px;border-radius:8px;cursor:pointer;font-size:13px}
+  button:hover{border-color:#3d4553}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  button.primary:disabled{opacity:.45;cursor:not-allowed}
+  button.ghost{background:transparent}
+  input,select{background:#12151b;color:var(--text);border:1px solid var(--line);
+               border-radius:7px;padding:6px 8px;font-size:13px}
+  input[type=date]{color-scheme:dark}
+  .layout{display:flex;flex:1;min-height:0}
+  aside{width:270px;background:var(--panel);border-right:1px solid var(--line);
+        padding:14px;overflow-y:auto;flex-shrink:0}
+  aside h3{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);
+           margin:16px 0 8px}
+  aside h3:first-child{margin-top:0}
+  .row{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+  .row label{display:flex;gap:7px;align-items:center;cursor:pointer;font-size:13px}
+  .chips{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{background:var(--panel2);border:1px solid var(--line);border-radius:999px;
+        padding:5px 10px;font-size:12px;cursor:pointer}
+  .chip:hover{border-color:var(--accent)}
+  main{flex:1;display:flex;flex-direction:column;min-width:0}
+  .toolbar{display:flex;align-items:center;gap:10px;padding:9px 16px;
+           border-bottom:1px solid var(--line);background:var(--panel);flex-wrap:wrap}
+  .grid{flex:1;overflow-y:auto;padding:14px;display:grid;
+        grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;align-content:start}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;
+        cursor:pointer;position:relative;transition:border-color .12s,transform .12s}
+  .card:hover{border-color:#3d4553;transform:translateY(-1px)}
+  .card.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+  .thumb{width:100%;aspect-ratio:1/1;object-fit:cover;background:#0b0d11;display:block}
+  .thumb.ph{display:flex;align-items:center;justify-content:center;color:#3f4756;font-size:22px}
+  .meta{padding:7px 9px;font-size:11.5px;color:var(--muted)}
+  .meta b{display:block;color:var(--text);font-weight:500;font-size:12px;
+          white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .badge{position:absolute;top:7px;left:7px;background:#000a;backdrop-filter:blur(4px);
+         border-radius:6px;padding:2px 6px;font-size:10px;letter-spacing:.03em;text-transform:uppercase}
+  .badge.exp{left:auto;right:7px;background:#16a34acc}
+  .badge.pair{left:auto;right:7px;background:#7c3aedcc}
+  .tick{position:absolute;top:6px;left:6px;width:20px;height:20px;border-radius:6px;
+        border:1.5px solid #fff9;background:#0006;display:flex;align-items:center;
+        justify-content:center;font-size:12px;color:#fff}
+  .card.sel .tick{background:var(--accent);border-color:var(--accent)}
+  .drawer{width:380px;background:var(--panel);border-left:1px solid var(--line);
+          display:none;flex-direction:column;flex-shrink:0}
+  .drawer.open{display:flex}
+  .drawer .pv{background:#0b0d11;display:flex;align-items:center;justify-content:center;
+              min-height:240px;max-height:52vh;overflow:hidden}
+  .drawer img,.drawer video{max-width:100%;max-height:52vh;display:block}
+  .drawer .body{padding:14px;overflow-y:auto;flex:1}
+  .kv{display:flex;justify-content:space-between;gap:10px;padding:5px 0;
+      border-bottom:1px dashed #232833;font-size:12.5px}
+  .kv span:first-child{color:var(--muted)}
+  .bar{position:relative;height:6px;background:#0b0d11;border-radius:4px;overflow:hidden;flex:1;min-width:120px}
+  .bar i{position:absolute;inset:0;width:0;background:var(--accent);transition:width .25s}
+  .foot{padding:10px 16px;border-top:1px solid var(--line);background:var(--panel);
+        display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  .banner{padding:12px 16px;border-radius:10px;margin:12px 16px;font-size:13px}
+  .banner.ok{background:#052e16;border:1px solid #14532d;color:#bbf7d0}
+  .banner.err{background:#2a0f0f;border:1px solid #5b1a1a;color:#fecaca}
+  .banner.warn{background:#2a1f05;border:1px solid #5b441a;color:#fde68a}
+  .hidden{display:none!important}
+  .spinner{width:26px;height:26px;border:3px solid #2a2f3a;border-top-color:var(--accent);
+           border-radius:50%;animation:spin .8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  code{background:#0b0d11;padding:1px 5px;border-radius:4px;font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>iPhone Photo Export</h1>
+  <span id="status"><span class="dot"></span><span id="statusText">not connected</span></span>
+  <span class="grow"></span>
+  <label class="muted" for="dest">Destination</label>
+  <input id="dest" size="34" placeholder="D:\iphone-backup">
+  <button id="btnDest">Save</button>
+  <button id="btnConnect" class="primary">Connect iPhone</button>
+  <button id="btnRefresh" class="hidden">Refresh</button>
+</header>
+
+<div id="banner" class="banner hidden"></div>
+
+<div class="layout">
+  <aside>
+    <h3>Presets</h3>
+    <div class="chips" id="presets"></div>
+
+    <h3>Date</h3>
+    <div class="row">
+      <select id="dateMode">
+        <option value="all">All dates</option>
+        <option value="older">Older than</option>
+        <option value="newer">Newer than</option>
+        <option value="between">Between</option>
+      </select>
+    </div>
+    <div class="row" id="rowDate1">
+      <input type="date" id="date1" value="2026-01-01">
+    </div>
+    <div class="row hidden" id="rowDate2">
+      <input type="date" id="date2"> <span class="muted">to</span>
+    </div>
+
+    <h3>Type</h3>
+    <div id="kinds"></div>
+
+    <h3>Size (MB)</h3>
+    <div class="row">
+      <input type="number" id="minMb" placeholder="min" style="width:80px">
+      <span class="muted">–</span>
+      <input type="number" id="maxMb" placeholder="max" style="width:80px">
+    </div>
+
+    <h3>Export status</h3>
+    <div class="row">
+      <select id="exported">
+        <option value="any">Any</option>
+        <option value="no">Not yet exported</option>
+        <option value="yes">Already exported</option>
+      </select>
+    </div>
+
+    <h3>Filename</h3>
+    <div class="row"><input id="q" placeholder="IMG_1234" style="width:100%"></div>
+
+    <div class="row" style="margin-top:14px">
+      <label><input type="checkbox" id="keepPairs" checked> Keep Live Photo pairs together</label>
+    </div>
+    <div class="row">
+      <button id="btnClear" class="ghost" style="width:100%">Clear filters</button>
+    </div>
+  </aside>
+
+  <main>
+    <div class="toolbar">
+      <span id="counts" class="muted">No device connected</span>
+      <span class="grow"></span>
+      <button id="btnAll">Select all shown</button>
+      <button id="btnNone">Clear selection</button>
+      <button id="btnSelBig" class="hidden">Only big files</button>
+    </div>
+    <div class="grid" id="grid"></div>
+  </main>
+
+  <div class="drawer" id="drawer">
+    <div class="pv" id="pv"><span class="muted">Select a file</span></div>
+    <div class="body">
+      <div id="pvMeta"></div>
+      <div class="row" style="margin-top:14px">
+        <button id="btnToggle" class="primary" style="width:100%">Include in export</button>
+      </div>
+      <div class="row">
+        <button id="btnCloseDrawer" class="ghost" style="width:100%">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="foot">
+  <span id="selInfo" class="muted">Nothing selected</span>
+  <div class="bar"><i id="barFill"></i></div>
+  <span id="barText" class="muted"></span>
+  <button id="btnExport" class="primary" disabled>Export selected</button>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const state = { items: [], shown: [], selected: new Set(), device: null, current: null,
+                rendered: 0, chunk: 120, job: null, kinds: new Set() };
+
+function api(path, body) {
+  return fetch(path, {
+    method: body === undefined ? "GET" : "POST",
+    headers: {"Content-Type": "application/json"},
+    body: body === undefined ? undefined : JSON.stringify(body)
+  }).then(async r => {
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+    return j;
+  });
+}
+
+function fmtBytes(b) {
+  if (!b) return "0 B";
+  const u = ["B","KB","MB","GB","TB"]; let i = 0;
+  while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+  return b.toFixed(b < 10 ? 1 : 0) + " " + u[i];
+}
+
+function banner(msg, kind) {
+  const el = $("#banner");
+  if (!msg) { el.classList.add("hidden"); return; }
+  el.className = "banner " + (kind || "warn");
+  el.innerHTML = msg;
+}
+
+// ---------- boot ----------
+async function boot() {
+  try {
+    const s = await api("/api/state");
+    $("#dest").value = s.dest;
+    if (s.fake) banner("Running against a <b>fake device</b> (demo data, no phone).", "warn");
+    renderPresets(s.presets);
+    renderKinds(s.kinds);
+    if (s.connected) {
+      setConnected(s.device);
+      await refresh();
+    }
+  } catch (e) { banner(e.message, "err"); }
+}
+
+function renderPresets(presets) {
+  $("#presets").innerHTML = "";
+  presets.forEach(p => {
+    const b = document.createElement("div");
+    b.className = "chip";
+    b.textContent = p.label;
+    b.onclick = () => { applyPreset(p.spec); };
+    $("#presets").appendChild(b);
+  });
+}
+
+function renderKinds(kinds) {
+  $("#kinds").innerHTML = "";
+  kinds.forEach(k => {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML = `<label><input type="checkbox" value="${k.id}"> ${k.label}</label>`;
+    row.querySelector("input").onchange = (e) => {
+      e.target.checked ? state.kinds.add(k.id) : state.kinds.delete(k.id);
+      applyFilters();
+    };
+    $("#kinds").appendChild(row);
+  });
+}
+
+function applyPreset(spec) {
+  $("#dateMode").value = spec.date_mode || "all";
+  if (spec.date) $("#date1").value = spec.date;
+  if (spec.date_from) $("#date1").value = spec.date_from;
+  if (spec.date_to) $("#date2").value = spec.date_to;
+  $("#exported").value = spec.exported || "any";
+  $("#minMb").value = spec.min_mb || "";
+  $("#maxMb").value = spec.max_mb || "";
+  state.kinds = new Set(spec.kinds || []);
+  document.querySelectorAll("#kinds input").forEach(i => {
+    i.checked = state.kinds.has(i.value);
+  });
+  toggleDateRows();
+  applyFilters();
+}
+
+function toggleDateRows() {
+  const m = $("#dateMode").value;
+  $("#rowDate1").classList.toggle("hidden", m === "all");
+  $("#rowDate2").classList.toggle("hidden", m !== "between");
+}
+
+function currentSpec() {
+  const m = $("#dateMode").value;
+  const spec = {date_mode: m, kinds: [...state.kinds],
+                exported: $("#exported").value,
+                q: $("#q").value, keep_pairs: $("#keepPairs").checked};
+  if (m === "older" || m === "newer") spec.date = $("#date1").value;
+  if (m === "between") { spec.date_from = $("#date1").value; spec.date_to = $("#date2").value; }
+  if ($("#minMb").value) spec.min_mb = +$("#minMb").value;
+  if ($("#maxMb").value) spec.max_mb = +$("#maxMb").value;
+  return spec;
+}
+
+// ---------- connection ----------
+function setConnected(device) {
+  state.device = device;
+  $("#status").querySelector(".dot").classList.add("on");
+  $("#statusText").textContent = device ? `${device.name || "iPhone"} · ${device.model || ""}` : "connected";
+  $("#btnConnect").textContent = "Disconnect";
+  $("#btnRefresh").classList.remove("hidden");
+}
+
+async function connect() {
+  if (state.device) {
+    await api("/api/disconnect", {});
+    state.device = null; state.items = []; state.selected.clear();
+    $("#status").querySelector(".dot").classList.remove("on");
+    $("#statusText").textContent = "not connected";
+    $("#btnConnect").textContent = "Connect iPhone";
+    $("#btnRefresh").classList.add("hidden");
+    render(); return;
+  }
+  banner("Looking for a connected iPhone…", "warn");
+  try {
+    const devs = await api("/api/devices");
+    let udid = null;
+    if (devs.devices.length > 1) {
+      const list = devs.devices.map((d, i) => `${i + 1}. ${d.name || "iPhone"} (${d.udid})`).join("\n");
+      const pick = prompt("Several phones connected — enter a number:\n" + list, "1");
+      if (!pick) return;
+      udid = devs.devices[(+pick || 1) - 1].udid;
+    }
+    const r = await api("/api/connect", {udid});
+    setConnected(r.device);
+    state.items = r.items;
+    banner("", null);
+    await applyFilters();
+  } catch (e) { banner(e.message, "err"); }
+}
+
+async function refresh() {
+  try {
+    const r = await api("/api/refresh", {});
+    state.items = r.items;
+    await applyFilters();
+  } catch (e) { banner(e.message, "err"); }
+}
+
+// ---------- filtering + grid ----------
+async function applyFilters() {
+  if (!state.device) return;
+  try {
+    const r = await api("/api/filter", currentSpec());
+    state.shown = r.items;
+    state.rendered = 0;
+    // drop selections that are no longer visible
+    const visible = new Set(state.shown.map(i => i.path));
+    for (const p of [...state.selected]) if (!visible.has(p)) state.selected.delete(p);
+    render();
+    updateFoot(r.summary);
+  } catch (e) { banner(e.message, "err"); }
+}
+
+function updateFoot(sum) {
+  if (sum) state.summary = sum;
+  sum = sum || state.summary;
+  const n = state.selected.size;
+  let bytes = 0;
+  for (const it of state.shown) if (state.selected.has(it.path)) bytes += it.size;
+  $("#selInfo").textContent = n
+    ? `${n} selected · ${fmtBytes(bytes)}`
+    : `Nothing selected · ${sum ? sum.count : 0} files shown`;
+  $("#btnExport").disabled = n === 0;
+  $("#btnExport").textContent = n ? `Export ${n} files` : "Export selected";
+  $("#counts").textContent = sum
+    ? `${sum.count} of ${state.items.length} files · ${fmtBytes(sum.bytes)}`
+    : "";
+}
+
+function render() {
+  const grid = $("#grid");
+  grid.innerHTML = "";
+  state.rendered = 0;
+  if (!state.shown.length) {
+    grid.innerHTML = `<p class="muted" style="grid-column:1/-1">No files match these filters.</p>`;
+    return;
+  }
+  renderChunk();
+  grid.onscroll = () => {
+    if (grid.scrollTop + grid.clientHeight > grid.scrollHeight - 400) renderChunk();
+  };
+}
+
+function renderChunk() {
+  const grid = $("#grid");
+  const slice = state.shown.slice(state.rendered, state.rendered + state.chunk);
+  slice.forEach(it => grid.appendChild(card(it)));
+  state.rendered += slice.length;
+  updateFoot();
+}
+
+function card(it) {
+  const el = document.createElement("div");
+  el.className = "card" + (state.selected.has(it.path) ? " sel" : "");
+  el.dataset.path = it.path;
+  const badge = it.pair_auto ? `<span class="badge pair">paired</span>`
+              : it.exported ? `<span class="badge exp">exported</span>` : "";
+  const kindLabel = it.is_video ? "video" : (it.kind === "live" ? "live" : "photo");
+  const icon = it.is_video ? "🎬" : "🖼";
+  el.innerHTML = `
+    <div class="tick" data-role="tick">${state.selected.has(it.path) ? "✓" : ""}</div>
+    <div class="badge">${kindLabel}</div>${badge}
+    <div class="thumb ph" data-role="thumb" data-path="${it.path}">${icon}</div>
+    <div class="meta"><b title="${it.name}">${it.name}</b>
+      ${it.day} · ${it.mb} MB</div>`;
+  const thumbEl = el.querySelector('[data-role="thumb"]');
+  if (!it.is_video) { THUMB_OBS.observe(thumbEl); }
+  el.querySelector('[data-role="tick"]').onclick = (e) => {
+    e.stopPropagation();
+    toggleSelect(it.path);
+  };
+  el.onclick = () => openPreview(it.path);
+  return el;
+}
+
+// Thumbnails are pulled one file at a time, max 3 in flight: a 10k library must
+// not trigger 10k USB reads because the user scrolled fast.
+const thumbQueue = [];
+let thumbsActive = 0;
+function pumpThumbs() {
+  while (thumbsActive < 3 && thumbQueue.length) {
+    const el = thumbQueue.shift();
+    if (!el.isConnected) continue;
+    thumbsActive++;
+    loadThumb(el).finally(() => { thumbsActive--; pumpThumbs(); });
+  }
+}
+async function loadThumb(el) {
+  const path = el.dataset.path;
+  try {
+    const res = await fetch("/api/thumb?path=" + encodeURIComponent(path));
+    if (res.status !== 200) return;
+    const blob = await res.blob();
+    const img = document.createElement("img");
+    img.className = "thumb";
+    img.src = URL.createObjectURL(blob);
+    img.alt = "";
+    el.replaceWith(img);
+  } catch (e) { /* leave the placeholder */ }
+}
+
+const THUMB_OBS = new IntersectionObserver((entries) => {
+  entries.forEach((en) => {
+    if (!en.isIntersecting) return;
+    THUMB_OBS.unobserve(en.target);
+    thumbQueue.push(en.target);
+    pumpThumbs();
+  });
+}, {root: $("#grid"), rootMargin: "400px"});
+
+function toggleSelect(path) {
+  if (state.selected.has(path)) state.selected.delete(path);
+  else state.selected.add(path);
+  const el = document.querySelector(`.card[data-path="${cssEscape(path)}"]`);
+  if (el) {
+    el.classList.toggle("sel", state.selected.has(path));
+    el.querySelector(".tick").textContent = state.selected.has(path) ? "✓" : "";
+  }
+  updateFoot();
+  if (state.current === path) syncDrawerButton();
+}
+function cssEscape(s) { return s.replace(/["\\]/g, "\\$&"); }
+
+function selectAll() {
+  state.shown.forEach(i => state.selected.add(i.path));
+  document.querySelectorAll(".card").forEach(c => {
+    c.classList.add("sel"); c.querySelector(".tick").textContent = "✓";
+  });
+  updateFoot();
+}
+function clearSelection() {
+  state.selected.clear();
+  document.querySelectorAll(".card").forEach(c => {
+    c.classList.remove("sel"); c.querySelector(".tick").textContent = "";
+  });
+  updateFoot();
+}
+
+// ---------- preview ----------
+async function openPreview(path, confirm) {
+  const it = state.shown.find(i => i.path === path) || state.items.find(i => i.path === path);
+  if (!it) return;
+  state.current = path;
+  const drawer = $("#drawer");
+  drawer.classList.add("open");
+  $("#pv").innerHTML = `<div class="spinner"></div>`;
+  $("#pvMeta").innerHTML = "";
+  try {
+    const r = await api("/api/preview", {path, confirm: !!confirm});
+    if (r.needs_confirm) {
+      $("#pv").innerHTML = `<div style="padding:20px;text-align:center">
+        <p>${r.message}</p></div>`;
+      $("#pvMeta").innerHTML = `<button id="btnConfirm" class="primary" style="width:100%">
+        Download ${r.size_mb.toFixed(0)} MB and preview</button>`;
+      $("#btnConfirm").onclick = () => openPreview(path, true);
+      return;
+    }
+    if (r.kind === "video") {
+      $("#pv").innerHTML = `<video src="${r.media_url}" controls autoplay muted playsinline></video>`;
+    } else {
+      $("#pv").innerHTML = `<img src="${r.media_url}" alt="">`;
+    }
+    $("#pvMeta").innerHTML = `
+      <div class="kv"><span>Name</span><span>${r.name}</span></div>
+      <div class="kv"><span>Date</span><span>${r.date}</span></div>
+      <div class="kv"><span>Size</span><span>${r.size_mb} MB</span></div>
+      <div class="kv"><span>Type</span><span>${r.kind_label}</span></div>
+      <div class="kv"><span>Status</span><span>${state.selected.has(path) ? "selected for export" : "not selected"}</span></div>`;
+    syncDrawerButton();
+  } catch (e) {
+    $("#pv").innerHTML = `<span class="muted">${e.message}</span>`;
+  }
+}
+
+function syncDrawerButton() {
+  const b = $("#btnToggle");
+  if (!b || !state.current) return;
+  const on = state.selected.has(state.current);
+  b.textContent = on ? "Exclude from export" : "Include in export";
+  b.classList.toggle("primary", !on);
+}
+
+// ---------- export ----------
+async function doExport() {
+  const paths = [...state.selected];
+  if (!paths.length) return;
+  banner("Exporting…", "warn");
+  $("#btnExport").disabled = true;
+  try {
+    await api("/api/export", {paths});
+    pollJob();
+  } catch (e) { banner(e.message, "err"); $("#btnExport").disabled = false; }
+}
+
+async function pollJob() {
+  try {
+    const j = await api("/api/export/status");
+    state.job = j;
+    if (j.state === "running") {
+      const pct = j.total ? Math.round(100 * j.done / j.total) : 0;
+      $("#barFill").style.width = pct + "%";
+      $("#barText").textContent = `${j.done}/${j.total} · ${fmtBytes(j.bytes)} · copied ${j.copied}, resumed ${j.resumed}`;
+      setTimeout(pollJob, 900);
+      return;
+    }
+    $("#barFill").style.width = "100%";
+    if (j.state === "done") {
+      $("#barText").textContent = "done";
+      const ok = j.safe_to_delete;
+      banner(
+        `<b>${ok ? "Export verified" : "Export finished with problems"}</b><br>
+         copied ${j.copied} · resumed ${j.resumed} · failed ${j.failed} ·
+         missing ${j.missing} · size mismatch ${j.mismatch} · ${j.seconds}s<br>
+         <code>${j.out_dir}</code><br><br>
+         <b>Before deleting on the phone:</b>
+         <ol style="margin:6px 0 0 18px;padding:0">
+           <li>VERIFY.txt shows 0 failed / missing / mismatch</li>
+           <li>Play 5 random videos from this folder</li>
+           <li>Copy the folder to an external drive</li>
+           <li>Delete on iPhone, then empty Recently Deleted</li>
+         </ol>`, ok ? "ok" : "err");
+      await refresh();
+    } else if (j.state === "error") {
+      banner("Export failed: " + j.error, "err");
+      $("#btnExport").disabled = false;
+    }
+  } catch (e) { banner(e.message, "err"); }
+}
+
+// ---------- wiring ----------
+$("#btnConnect").onclick = connect;
+$("#btnRefresh").onclick = refresh;
+$("#btnAll").onclick = selectAll;
+$("#btnNone").onclick = clearSelection;
+$("#btnExport").onclick = doExport;
+$("#btnCloseDrawer").onclick = () => { $("#drawer").classList.remove("open"); state.current = null; };
+$("#btnToggle").onclick = () => { if (state.current) { toggleSelect(state.current); syncDrawerButton(); } };
+$("#btnClear").onclick = () => {
+  $("#dateMode").value = "all"; $("#exported").value = "any"; $("#q").value = "";
+  $("#minMb").value = ""; $("#maxMb").value = "";
+  state.kinds.clear();
+  document.querySelectorAll("#kinds input").forEach(i => i.checked = false);
+  toggleDateRows(); applyFilters();
+};
+$("#btnDest").onclick = async () => {
+  try { const r = await api("/api/config", {dest: $("#dest").value});
+        $("#dest").value = r.dest; banner("Destination set to " + r.dest, "ok"); }
+  catch (e) { banner(e.message, "err"); }
+};
+$("#dateMode").onchange = () => { toggleDateRows(); applyFilters(); };
+["#date1","#date2","#exported","#minMb","#maxMb"].forEach(s => {
+  $(s).onchange = applyFilters;
+});
+$("#keepPairs").onchange = applyFilters;
+let qt; $("#q").oninput = () => { clearTimeout(qt); qt = setTimeout(applyFilters, 300); };
+
+boot();
+</script>
+</body>
+</html>

@@ -7,6 +7,7 @@ Run: python test_export.py
 """
 import asyncio
 import csv
+import re
 import shutil
 import sys
 import tempfile
@@ -106,8 +107,12 @@ def main() -> int:
         failures.append(f"run1 copied {len(copied)} media files, expected {expected}")
     if any(p.name == "notes.txt" for p in copied):
         failures.append("non-media file notes.txt was copied")
-    if not (out / "VERIFY.txt").exists() or "failed      : 0" not in (out / "VERIFY.txt").read_text():
-        failures.append("VERIFY.txt missing or reports failures")
+    verify = out / "VERIFY.txt"
+    if not verify.exists():
+        failures.append("VERIFY.txt missing")
+    elif not re.search(r"failed\s*:\s*0", verify.read_text()) or \
+            not re.search(r"missing\s*:\s*0", verify.read_text()):
+        failures.append("VERIFY.txt reports failures")
     rows = manifest_rows(out)
     if len(rows) != expected or any(not r["sha256"] for r in rows):
         failures.append(f"manifest rows={len(rows)} expected={expected}, or empty sha256")
