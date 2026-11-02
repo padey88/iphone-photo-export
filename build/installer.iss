@@ -1,6 +1,6 @@
 ; Inno Setup 6 script — single-file installer for iPhone Photo Export.
 ; Bundled: Python runtime + Flask + pymobiledevice3 + Pillow/pillow-heif,
-;          ffmpeg/ffprobe, the web UI, and Apple's USB device driver (MSI).
+;          ffmpeg, the web UI, and Apple's USB device driver (MSI).
 ; Built by build.ps1:  ISCC.exe /DAppVersion=x.y.z /DSourceDir=... installer.iss
 
 #ifndef AppVersion
@@ -41,7 +41,6 @@ MinVersion=10.0.17763
 SetupLogging=yes
 CloseApplications=yes
 RestartApplications=no
-; Big payload (Python runtime + ffmpeg); avoid a 32-bit limit surprise.
 DiskSpanning=no
 
 [Languages]
@@ -52,33 +51,32 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 ; --- the frozen app: exe, Python DLLs, all packages, web assets -------------
-Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; drivers\ is excluded: the MSI belongs in {tmp} only, not in the install dir.
+Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "\drivers\*"; \
+  Flags: ignoreversion recursesubdirs createallsubdirs
 
-; --- Apple Mobile Device Support (usbmuxd) MSI, extracted from iTunes ------
+; --- Apple Mobile Device Support (usbmuxd host driver), from Apple's iTunes -
 ;     Staged to {tmp} and deleted after install: it is only needed once.
 Source: "{#SourceDir}\drivers\{#DriverMsi}"; DestDir: "{tmp}\iphotodrv"; \
   Flags: deleteafterinstall; Check: NeedsAppleDriver
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"
-Name: "{group}\{#AppName} (log)"; Filename: "{app}\{#AppExe}"; Parameters: "--serve"; Comment: "Run without a window (diagnostics)"
+Name: "{group}\{#AppName} (background server)"; Filename: "{app}\{#AppExe}"; \
+  Parameters: "--serve"; Comment: "Run without a window (diagnostics)"
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
 [Run]
-; 1) Apple's USB device driver — only when the service is missing.
-Filename: "{sys}\msiexec.exe"; \
-  Parameters: "/i ""{tmp}\iphotodrv\{#DriverMsi}"" /qn /norestart /l*v ""{log}\apple-driver.log"""; \
-  StatusMsg: "Installing Apple USB device driver (one time)..."; \
-  Check: NeedsAppleDriver; Flags: waituntilterminated
-
-; 2) Launch the app the first time.
-Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#StringChange(AppName, '&', '&&')}}"; \
+; Launch the app the first time (interactive installs only).
+Filename: "{app}\{#AppExe}"; \
+  Description: "{cm:LaunchProgram,{#StringChange(AppName, '&', '&&')}}"; \
   Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
 ; Stop a running instance so the folder can be removed.
-Filename: "{sys}\taskkill.exe"; Parameters: "/f /im {#AppExe}"; Flags: runhidden skipifdoesntexist; RunOnceId: "KillApp"
+Filename: "{sys}\taskkill.exe"; Parameters: "/f /im {#AppExe}"; \
+  Flags: runhidden skipifdoesntexist; RunOnceId: "KillApp"
 
 [UninstallDelete]
 ; Only things the app itself creates inside {app}; user photos are never touched.
@@ -88,6 +86,10 @@ Type: dirifempty; Name: "{app}"
 [Code]
 const
   SVC = 'Apple Mobile Device Service';
+
+var
+  DriverAttempted: Boolean;
+  DriverExitCode: Integer;
 
 { Is Apple's device service (usbmuxd host) already installed? }
 function NeedsAppleDriver: Boolean;
@@ -109,32 +111,76 @@ begin
       Result := '';
 end;
 
-procedure InitializeWizard;
+{ Install Apple's driver from code, not [Run], so a failure cannot abort the
+  install. A missing driver is survivable (the user can install iTunes later and
+  the app still launches); a half-finished setup is not. }
+procedure InstallAppleDriver;
 var
-  P: Integer;
+  Msi, MsiLog, Params: String;
+  ResultCode: Integer;
 begin
-  { A missing WebView2 is not fatal: the app falls back to the default browser. }
-  if WebView2Version = '' then
+  if not NeedsAppleDriver then
   begin
-    P := MsgBox('WebView2 runtime was not detected on this PC.' + #13#10#13#10 +
-                'The app will open in your default browser instead of a native window. ' +
-                'Install "Microsoft Edge WebView2 Runtime" for the native experience.' + #13#10#13#10 +
-                'Continue with the installation?', mbConfirmation, MB_YESNO);
-    if P = IDNO then
-      Abort;
+    Log('Apple driver: already present, skipping');
+    Exit;
   end;
-end;
 
-function AppleDriverMessage: String;
-begin
-  if NeedsAppleDriver then
-    Result := 'Apple USB device driver (Apple Mobile Device Support) is not installed and will be installed now.'
+  Msi := ExpandConstant('{tmp}\iphotodrv\{#DriverMsi}');
+  if not FileExists(Msi) then
+  begin
+    Log('Apple driver: MSI not staged (' + Msi + '), skipping');
+    Exit;
+  end;
+
+  // Log next to the MSI: the {log} constant is empty under /VERYSILENT, and
+  // msiexec then fails with 1622 ("error opening installation log file").
+  MsiLog := ExpandConstant('{tmp}\iphotodrv\apple-driver.log');
+  Params := '/i "' + Msi + '" /qn /norestart /l*v "' + MsiLog + '"';
+  DriverAttempted := True;
+  Log('Apple driver: msiexec ' + Params);
+
+  if not Exec(ExpandConstant('{sys}\msiexec.exe'), Params, '', SW_HIDE,
+              ewWaitUntilTerminated, ResultCode) then
+  begin
+    DriverExitCode := -1;
+    Log('Apple driver: could not start msiexec');
+  end
   else
-    Result := 'Apple USB device driver already present - skipping.';
+  begin
+    DriverExitCode := ResultCode;
+    Log('Apple driver: exit code ' + IntToStr(ResultCode));
+  end;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if CurStep = ssInstall then
-    Log(AppleDriverMessage);
+  if CurStep = ssPostInstall then
+  begin
+    InstallAppleDriver;
+    // recursesubdirs creates an empty {app}\drivers even though the MSI is
+    // excluded from {app}; leave no empty folder behind.
+    RemoveDir(ExpandConstant('{app}\drivers'));
+  end;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  { The driver runs during ssPostInstall; warn on the final page if it failed.
+    3010 = ERROR_SUCCESS_REBOOT_REQUIRED, which is a success for our purposes. }
+  if (CurPageID = wpFinished) and DriverAttempted
+     and (DriverExitCode <> 0) and (DriverExitCode <> 3010) then
+    MsgBox('The app installed, but Apple''s USB device driver did not (code '
+           + IntToStr(DriverExitCode) + ').' + #13#10#13#10 +
+           'Windows will not see the iPhone until a driver is present. Install ' +
+           'iTunes or the "Apple Devices" app from the Microsoft Store, then ' +
+           'start this app again.' + #13#10#13#10 +
+           'Driver log: ' + ExpandConstant('{tmp}\iphotodrv\apple-driver.log'),
+           mbInformation, MB_OK);
+end;
+
+procedure InitializeWizard;
+begin
+  { A missing WebView2 is not fatal: the app falls back to the default browser. }
+  if WebView2Version = '' then
+    Log('WebView2 not detected; the app will open in the default browser');
 end;
