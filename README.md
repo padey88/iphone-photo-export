@@ -3,7 +3,7 @@
 **Offload photos and videos from a USB-connected iPhone to a Windows PC — as a normal
 installed desktop app, with SHA-256 verification before you delete anything on the phone.**
 
-One ~120 MB installer. No Python, no iTunes, no command line, no iCloud. Double-click, plug in
+One 144 MB installer. No Python, no iTunes, no command line, no iCloud. Double-click, plug in
 the cable, tap Trust, export.
 
 Read-only on the device: it never deletes, moves or renames anything on the iPhone.
@@ -28,7 +28,7 @@ This app is the missing middle: free, open source, and built around one question
 
 ## Install (Windows 10/11, 64-bit)
 
-1. Download `iPhonePhotoExport-1.0.0-Setup.exe` from [Releases](../../releases).
+1. Download `iPhonePhotoExport-1.0.0-Setup.exe` from [Releases](../../releases/latest).
 2. Run it. Windows asks for administrator rights once, to install Apple's USB device driver.
 3. Done — an **iPhone Photo Export** shortcut is on the desktop and in the Start menu.
 
@@ -53,7 +53,8 @@ extracted from Apple's own iTunes package. It is installed only when the
 `Apple Mobile Device Service` is not already present, so machines with iTunes or the Apple
 Devices app skip that step. **iTunes itself is not installed** — only the driver.
 
-Installer size is ~120 MB, mostly ffmpeg (~100 MB) and the Apple driver (34 MB).
+Installer size is 144 MB: ffmpeg (~100 MB), the Apple driver (34 MB), and the Python payload
+(~10 MB after compression).
 
 ### Requirements
 
@@ -61,6 +62,14 @@ Installer size is ~120 MB, mostly ffmpeg (~100 MB) and the Apple driver (34 MB).
 - ~450 MB free disk space (install + thumbnail cache)
 - The iPhone cable plugged directly into the PC — no hub, no dock, no monitor USB port
 - iPhone unlocked, with **Trust** tapped when the prompt appears
+
+### Download
+
+[Latest release](../../releases/latest) · 144 MB · SHA-256
+`cb161a4bff8493ef3241c7a5d615279dd5532dd04dbad00e564c28d4a38b3e2b`
+
+The build is unsigned, so SmartScreen may warn — *More info* > *Run anyway*, and check the hash
+above with `certutil -hashfile <file> SHA256`.
 
 ---
 
