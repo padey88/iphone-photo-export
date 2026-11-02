@@ -52,14 +52,20 @@
   .card.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
   .thumb{width:100%;aspect-ratio:1/1;object-fit:cover;background:#0b0d11;display:block}
   .thumb.ph{display:flex;align-items:center;justify-content:center;color:#3f4756;font-size:22px}
+  .thumb.ph.vid{background:radial-gradient(circle at 50% 45%,#1b2430,#0b0d11 70%);
+                color:#93a3b8;font-size:26px;position:relative}
+  .thumb.ph.vid::after{content:attr(data-ext);position:absolute;bottom:6px;right:8px;
+                       font-size:10px;letter-spacing:.06em;color:#6b7787}
   .meta{padding:7px 9px;font-size:11.5px;color:var(--muted)}
   .meta b{display:block;color:var(--text);font-weight:500;font-size:12px;
           white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .badge{position:absolute;top:7px;left:7px;background:#000a;backdrop-filter:blur(4px);
          border-radius:6px;padding:2px 6px;font-size:10px;letter-spacing:.03em;text-transform:uppercase}
-  .badge.exp{left:auto;right:7px;background:#16a34acc}
-  .badge.pair{left:auto;right:7px;background:#7c3aedcc}
-  .tick{position:absolute;top:6px;left:6px;width:20px;height:20px;border-radius:6px;
+  .tags{position:absolute;top:6px;left:6px;display:flex;gap:4px;align-items:center;max-width:calc(100% - 40px)}
+  .tags .badge{position:static}
+  .badge.exp{background:#16a34acc}
+  .badge.pair{background:#7c3aedcc}
+  .tick{position:absolute;top:6px;right:6px;width:20px;height:20px;border-radius:6px;
         border:1.5px solid #fff9;background:#0006;display:flex;align-items:center;
         justify-content:center;font-size:12px;color:#fff}
   .card.sel .tick{background:var(--accent);border-color:var(--accent)}
@@ -392,18 +398,21 @@ function card(it) {
   const el = document.createElement("div");
   el.className = "card" + (state.selected.has(it.path) ? " sel" : "");
   el.dataset.path = it.path;
-  const badge = it.pair_auto ? `<span class="badge pair">paired</span>`
-              : it.exported ? `<span class="badge exp">exported</span>` : "";
-  const kindLabel = it.is_video ? "video" : (it.kind === "live" ? "live" : "photo");
-  const icon = it.is_video ? "🎬" : "🖼";
+  const tags = [];
+  tags.push(`<span class="badge">${it.is_video ? "video" : (it.kind === "live" ? "live" : it.kind === "screenshot" ? "shot" : "photo")}</span>`);
+  if (it.pair_auto) tags.push(`<span class="badge pair">paired</span>`);
+  if (it.exported) tags.push(`<span class="badge exp">exported</span>`);
+  const icon = it.is_video ? "▶" : "🖼";
+  const cls = it.is_video ? "thumb ph vid" : "thumb ph";
+  const ext = (it.ext || "").replace(".", "").toUpperCase();
   el.innerHTML = `
+    <div class="tags">${tags.join("")}</div>
     <div class="tick" data-role="tick">${state.selected.has(it.path) ? "✓" : ""}</div>
-    <div class="badge">${kindLabel}</div>${badge}
-    <div class="thumb ph" data-role="thumb" data-path="${it.path}">${icon}</div>
+    <div class="${cls}" data-role="thumb" data-ext="${ext}" data-path="${it.path}">${icon}</div>
     <div class="meta"><b title="${it.name}">${it.name}</b>
       ${it.day} · ${it.mb} MB</div>`;
   const thumbEl = el.querySelector('[data-role="thumb"]');
-  if (!it.is_video) { THUMB_OBS.observe(thumbEl); }
+  THUMB_OBS.observe(thumbEl);
   el.querySelector('[data-role="tick"]').onclick = (e) => {
     e.stopPropagation();
     toggleSelect(it.path);

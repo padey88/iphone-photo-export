@@ -26,6 +26,10 @@ class DeviceError(RuntimeError):
 class _FakeAfc:
     """Directory-backed stand-in for AfcService."""
 
+    # A real USB pull is slow; the demo can throttle the fake one so the progress
+    # bar can be observed (and screenshotted) instead of finishing instantly.
+    THROTTLE_MBPS = float(os.environ.get("IPHONE_EXPORT_FAKE_MBPS", "0") or 0)
+
     def __init__(self, root: Path):
         self.root = root
 
@@ -48,6 +52,13 @@ class _FakeAfc:
     async def pull(self, src: str, dst: str, progress_bar: bool = False) -> None:
         data = self._p(src).read_bytes()
         Path(dst).parent.mkdir(parents=True, exist_ok=True)
+        if self.THROTTLE_MBPS > 0:
+            per_chunk = 4 * 1024 * 1024
+            with open(dst, "wb") as fh:
+                for i in range(0, len(data), per_chunk):
+                    fh.write(data[i:i + per_chunk])
+                    await asyncio.sleep(per_chunk / (self.THROTTLE_MBPS * 1024 * 1024))
+            return
         Path(dst).write_bytes(data)
 
 

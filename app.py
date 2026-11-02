@@ -34,7 +34,15 @@ except Exception:
     pass
 from PIL import Image
 
-APP_DIR = Path(__file__).parent
+def _resource_dir() -> Path:
+    """Bundled read-only resources (works both from source and from a frozen exe)."""
+    env = os.environ.get("IPHONE_EXPORT_RESOURCE")
+    if env:
+        return Path(env)
+    return Path(__file__).parent
+
+
+APP_DIR = _resource_dir()
 CACHE = Path(os.environ.get("IPHONE_EXPORT_CACHE", Path.home() / ".iphone-export-cache"))
 THUMBS = CACHE / "thumbs"
 MEDIA = CACHE / "media"
@@ -171,7 +179,16 @@ def api_config():
 
 # ------------------------------------------------------------------ preview
 def _ffmpeg() -> str | None:
-    return shutil.which("ffmpeg")
+    """Prefer the bundled ffmpeg (bin\\ffmpeg.exe next to the exe), then PATH."""
+    exe = shutil.which("ffmpeg")
+    if exe:
+        return exe
+    import sys
+    here = Path(sys.executable).parent if getattr(sys, "frozen", False) else APP_DIR
+    for cand in (here / "bin" / "ffmpeg.exe", APP_DIR / "bin" / "ffmpeg.exe"):
+        if cand.exists():
+            return str(cand)
+    return None
 
 
 def make_thumb(item: dict) -> Path | None:
@@ -245,6 +262,9 @@ def api_preview():
     })
 
 
+VIDEO_THUMB_MAX_MB = 250   # pull-at-most for a video poster frame
+
+
 @app.get("/api/thumb")
 def api_thumb():
     """Thumbnail by device path. Pulls the file into the cache once, then reuses."""
@@ -252,8 +272,9 @@ def api_thumb():
     item = find_item(path)
     if not item:
         return ("", 404)
-    if item["is_video"]:
-        # Videos are not pulled just to render a grid: too expensive.
+    if item["is_video"] and item["mb"] > VIDEO_THUMB_MAX_MB:
+        # Pulling a multi-GB clip just to draw a 480px poster is not worth it;
+        # the grid shows a video placeholder instead.
         return ("", 204)
     thumb = make_thumb(item)
     if not thumb:

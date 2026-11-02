@@ -3,3 +3,11 @@ __pycache__/
 *.pyc
 venv/
 *.part
+
+# build artifacts
+bin/
+payload/
+installer/
+assets/app.ico
+assets/*.bmp
+drivers/*.msi
