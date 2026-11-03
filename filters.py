@@ -1,23 +1,23 @@
-"""Filtering / classification logic for the export GUI.
-
-Pure functions over inventory dicts so they can be unit-tested without a device.
-
-Inventory item: {path, name, size, mtime, ext, is_video}
-After classify(): + {kind, date, exported, mb, stem, dir}
-Kinds: photo, live (still of a Live Photo), live_mov (its motion clip),
-       screenshot, recording (screen recording), video
-"""
 from __future__ import annotations
 
 import posixpath
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 
 IMAGE_EXT = {".jpg", ".jpeg", ".heic", ".heif", ".png", ".gif", ".tif", ".tiff", ".dng"}
 VIDEO_EXT = {".mov", ".mp4", ".m4v", ".avi"}
 
 
-def classify(items: list[dict], exported_index: dict[str, int] | None = None) -> list[dict]:
-    """Annotate items with kind/date/exported and link Live Photo pairs."""
+def _local_timestamp(epoch: int) -> float:
+    """Convert an epoch to a naive-local timestamp for legacy local mtime fields.
+
+    Windows stores local times in the DST state active at that instant, so use
+    the actual date's UTC offset rather than the current offset.
+    """
+    return epoch + (datetime.fromtimestamp(epoch).astimezone().utcoffset()
+                    or timedelta()).total_seconds()
+
+
+def classify(items: list[dict], exported_index: dict[str, dict] | None = None) -> list[dict]:
     exported_index = exported_index or {}
     stems: dict[tuple[str, str], dict[str, str]] = {}
     for it in items:
@@ -49,14 +49,22 @@ def classify(items: list[dict], exported_index: dict[str, int] | None = None) ->
         else:
             kind = "photo"
 
+        previous = exported_index.get(it["path"])
+        # Only mark an item exported when its device size/mtime still agrees
+        # with the successful manifest row. Otherwise an edited phone file is
+        # hidden by the "not yet exported" filter.
+        exported = bool(previous
+                        and int(previous["size"]) == it["size"]
+                        and int(previous.get("mtime_epoch") or 0) == it["mtime"])
+        local_date = datetime.fromtimestamp(it["mtime"])
         out.append({
             **it,
             "stem": stem,
             "dir": d,
             "kind": kind,
-            "date": datetime.fromtimestamp(it["mtime"]).strftime("%Y-%m-%d %H:%M"),
-            "day": datetime.fromtimestamp(it["mtime"]).strftime("%Y-%m-%d"),
-            "exported": it["path"] in exported_index,
+            "date": local_date.strftime("%Y-%m-%d %H:%M"),
+            "day": local_date.strftime("%Y-%m-%d"),
+            "exported": exported,
             "mb": round(it["size"] / 1e6, 2),
         })
     return out
@@ -70,14 +78,16 @@ def _parse_date(s: str, end: bool = False) -> float:
 
 
 def apply_filters(items: list[dict], spec: dict) -> list[dict]:
-    """spec keys: date_mode(all|older|newer|between), date, date_from, date_to,
-    kinds(list), min_mb, max_mb, exported(any|no|yes), q, keep_pairs(bool)."""
     mode = spec.get("date_mode", "all")
     kinds = spec.get("kinds") or []
     min_mb = spec.get("min_mb")
     max_mb = spec.get("max_mb")
     exp = spec.get("exported", "any")
     q = (spec.get("q") or "").strip().lower()
+    if min_mb is not None and max_mb is not None and float(min_mb) > float(max_mb):
+        raise ValueError("minimum size cannot be greater than maximum size")
+    if min_mb is not None and float(min_mb) < 0 or max_mb is not None and float(max_mb) < 0:
+        raise ValueError("size filters cannot be negative")
 
     lo = hi = None
     if mode == "older" and spec.get("date"):
@@ -89,6 +99,8 @@ def apply_filters(items: list[dict], spec: dict) -> list[dict]:
             lo = _parse_date(spec["date_from"])
         if spec.get("date_to"):
             hi = _parse_date(spec["date_to"], end=True)
+    if lo is not None and hi is not None and lo > hi:
+        raise ValueError("start date cannot be after end date")
 
     picked = []
     for it in items:
@@ -117,7 +129,6 @@ def apply_filters(items: list[dict], spec: dict) -> list[dict]:
 
 
 def _attach_pairs(picked: list[dict], everything: list[dict]) -> list[dict]:
-    """Re-add Live Photo motion clips whose still matched the filter (and vice versa)."""
     by_key = {(i["dir"], i["stem"], i["ext"]): i for i in everything}
     have = {i["path"] for i in picked}
     additions: dict[str, dict] = {}
@@ -149,7 +160,6 @@ def summarize(items: list[dict]) -> dict:
 
 
 def suggest_presets(today: datetime | None = None) -> list[dict]:
-    """Date presets offered in the UI."""
     today = today or datetime.now()
     y = today.year
     return [
@@ -159,7 +169,7 @@ def suggest_presets(today: datetime | None = None) -> list[dict]:
          "spec": {"date_mode": "older", "date": f"{y - 1}-01-01"}},
         {"id": "last_30", "label": "Last 30 days",
          "spec": {"date_mode": "newer",
-                  "date": (today.replace(hour=0, minute=0, second=0)).strftime("%Y-%m-%d")}},
+                  "date": (today - timedelta(days=30)).strftime("%Y-%m-%d")}},
         {"id": "not_exported", "label": "Not yet exported",
          "spec": {"date_mode": "all", "exported": "no"}},
         {"id": "big_videos", "label": "Videos over 100 MB",

@@ -160,7 +160,7 @@ async def main() -> int:
                   f"failed={p['failed']}  {human(rate)}/s", flush=True)
 
         result = await exporter.copy_items(afc, items, out_dir, on_progress=on_progress)
-        verification = exporter.verify_items(items, out_dir)
+        verification = exporter.verify_items(items, out_dir, result["rows"])
         exporter.write_manifest(result["rows"], out_dir / "manifest.csv")
         exporter.write_report(out_dir / "VERIFY.txt", serial=serial, source=args.root,
                               copy_result=result, verification=verification)

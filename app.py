@@ -64,6 +64,8 @@ STATE: dict = {
                                 Path.home() / "Pictures" / "iPhone-Export")).expanduser(),
     "job": None,
     "last_export": None,
+    "run_id": None,
+    "job_id": None,
 }
 LOCK = threading.Lock()
 
@@ -80,12 +82,17 @@ def find_item(device_path: str) -> dict | None:
 
 
 def refresh_inventory() -> dict:
+    with LOCK:
+        job = STATE.get("job")
+        if job and job.get("state") == "running":
+            raise DeviceError("An export is running; wait for it to finish before refreshing.")
     items = bridge.inventory("/DCIM")
     exported = exporter.already_exported_index(STATE["dest"])
     classified = filters.classify(exporter.walk_inventory(items), exported)
-    STATE["inventory"] = items
-    STATE["classified"] = classified
-    STATE["exported_index"] = exported
+    with LOCK:
+        STATE["inventory"] = items
+        STATE["classified"] = classified
+        STATE["exported_index"] = exported
     return {"items": classified, "summary": filters.summarize(classified)}
 
 
@@ -112,6 +119,8 @@ def api_state():
         ],
         "fake": bool(bridge.fake_root),
         "inventory_count": len(STATE["classified"]),
+        "export_running": bool(STATE.get("run_id")),
+        "shutting_down": bool(STATE.get("shutdown_requested")),
     })
 
 
@@ -134,6 +143,8 @@ def api_connect():
         return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
     try:
         data = refresh_inventory()
+    except DeviceError as exc:
+        return jsonify({"error": str(exc)}), 409
     except Exception as exc:
         return jsonify({"error": f"connected but reading /DCIM failed: {exc}"}), 500
     return jsonify({"device": info, **data, "summary_all": data["summary"]})
@@ -141,7 +152,13 @@ def api_connect():
 
 @app.post("/api/disconnect")
 def api_disconnect():
-    bridge.disconnect()
+    with LOCK:
+        if STATE.get("run_id"):
+            return jsonify({"error": "wait for the export to finish before disconnecting"}), 409
+    try:
+        bridge.disconnect()
+    except DeviceError as exc:
+        return jsonify({"error": str(exc)}), 409
     with LOCK:
         STATE["inventory"], STATE["classified"] = [], []
     return jsonify({"ok": True})
@@ -153,6 +170,8 @@ def api_refresh():
         return jsonify({"error": "not connected"}), 400
     try:
         return jsonify(refresh_inventory())
+    except DeviceError as exc:
+        return jsonify({"error": str(exc)}), 409
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -160,7 +179,10 @@ def api_refresh():
 @app.post("/api/filter")
 def api_filter():
     spec = request.get_json(silent=True) or {}
-    picked = filters.apply_filters(STATE["classified"], spec)
+    try:
+        picked = filters.apply_filters(STATE["classified"], spec)
+    except (TypeError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 400
     return jsonify({"items": picked, "summary": filters.summarize(picked)})
 
 
@@ -168,6 +190,8 @@ def api_filter():
 def api_config():
     payload = request.get_json(silent=True) or {}
     if "dest" in payload and payload["dest"]:
+        if STATE.get("run_id"):
+            return jsonify({"error": "cannot change destination during an export"}), 409
         dest = Path(payload["dest"]).expanduser()
         try:
             dest.mkdir(parents=True, exist_ok=True)
@@ -175,6 +199,11 @@ def api_config():
             return jsonify({"error": f"cannot use {dest}: {exc}"}), 400
         STATE["dest"] = dest
         STATE["exported_index"] = exporter.already_exported_index(dest)
+        for item in STATE["classified"]:
+            previous = STATE["exported_index"].get(item["path"])
+            item["exported"] = bool(previous
+                                    and int(previous["size"]) == item["size"]
+                                    and int(previous.get("mtime_epoch") or 0) == item["mtime"])
     return jsonify({"dest": str(STATE["dest"])})
 
 
@@ -345,84 +374,79 @@ def api_media(token: str):
 
 
 # ------------------------------------------------------------------- export
-def run_export(paths: list[str], dest: Path, udid: str, job: dict) -> None:
-    items = [i for i in STATE["classified"] if i["path"] in set(paths)]
-    items = [{"path": i["path"], "size": i["size"], "mtime": i["mtime"]} for i in items]
+def run_export(run_id: str, items: list[dict], dest: Path, udid: str, job: dict) -> None:
     out_dir = dest / udid
 
     def on_progress(p):
         job.update(p)
-        STATE["last_ping"] = time.time()
 
     def on_error(path, msg):
         job.setdefault("errors", []).append({"path": path, "error": msg})
 
     try:
-        result = bridge.call(
-            exporter.copy_items(bridge.afc(), items, out_dir, on_progress=on_progress,
-                                on_error=on_error),
-            timeout=7200)
-        verification = exporter.verify_items(items, out_dir)
+        result = bridge.export_items(items, out_dir, on_progress, on_error)
+        verification = exporter.verify_items(items, out_dir, result["rows"])
         exporter.write_manifest(result["rows"], out_dir / "manifest.csv")
+        exporter.write_manifest(result["rows"], out_dir / "history" / f"{run_id}.csv")
         exporter.write_report(out_dir / "VERIFY.txt", serial=udid, source="/DCIM",
                               copy_result=result, verification=verification)
-        # A cable yanked mid-transfer shows up as a burst of per-file failures.
-        # Say so explicitly: "5 failed" alone invites the user to retry blindly.
         failures = result["failed"]
-        note = job.get("note")
-        if failures and failures >= max(3, len(items) // 5):
-            note = ("Many files failed — if the phone was unplugged or locked "
-                    "during the copy, reconnect it and export again. Everything "
-                    "already copied is kept and will be resumed, not re-downloaded.")
         job.update({
-            "state": "done",
-            "copied": result["copied"], "resumed": result["resumed"],
-            "failed": failures,
-            "verification": {k: v for k, v in verification.items() if k not in ("missing", "mismatch")},
-            "missing": len(verification["missing"]),
+            "state": "done", "copied": result["copied"], "resumed": result["resumed"],
+            "failed": failures, "missing": len(verification["missing"]),
             "mismatch": len(verification["mismatch"]),
+            "hash_mismatch": len(verification["hash_mismatch"]),
+            "missing_hash": len(verification["missing_hash"]),
             "safe_to_delete": verification["ok"] and failures == 0,
-            "out_dir": str(out_dir),
-            "seconds": round(time.time() - job["started"], 1),
+            "out_dir": str(out_dir), "seconds": round(time.time() - job["started"], 1),
         })
-        if note:
-            job["note"] = note
+        if failures:
+            job["note"] = ("Some files failed. Reconnect and retry. Verified files are "
+                           "kept; no phone files were changed or deleted.")
         with LOCK:
-            STATE["exported_index"] = exporter.already_exported_index(dest)
             STATE["last_export"] = job
+            exported = exporter.already_exported_index(dest)
+            STATE["exported_index"] = exported
             for it in STATE["classified"]:
-                if it["path"] in set(paths):
-                    it["exported"] = True
+                previous = exported.get(it["path"])
+                it["exported"] = bool(previous
+                                      and int(previous["size"]) == it["size"]
+                                      and int(previous.get("mtime_epoch") or 0) == it["mtime"])
     except Exception as exc:
         job.update({"state": "error", "error": f"{type(exc).__name__}: {exc}"})
     finally:
         job["finished"] = time.time()
+        with LOCK:
+            STATE["run_id"] = None
 
 
 @app.post("/api/export")
 def api_export():
     payload = request.get_json(silent=True) or {}
-    paths = payload.get("paths") or []
-    if not paths:
-        return jsonify({"error": "nothing selected"}), 400
-    job = STATE.get("job")
-    if job and job.get("state") == "running":
-        # Trust the thread, not the flag: an export whose thread died (crash,
-        # killed device) must not block every future export forever.
-        worker = STATE.get("job_thread")
-        if worker is not None and worker.is_alive():
+    paths = payload.get("paths")
+    if not isinstance(paths, list) or not paths or not all(isinstance(p, str) for p in paths):
+        return jsonify({"error": "select at least one file"}), 400
+    with LOCK:
+        if STATE.get("shutdown_requested"):
+            return jsonify({"error": "the app is shutting down"}), 409
+        if STATE.get("run_id"):
             return jsonify({"error": "an export is already running"}), 409
-        job.update({"state": "error", "error": "previous export died unexpectedly"})
-    if not bridge.connected:
-        return jsonify({"error": "not connected"}), 400
-    job = {"state": "running", "total": len(paths), "done": 0,
-           "copied": 0, "resumed": 0, "failed": 0, "bytes": 0,
-           "current": "", "started": time.time()}
-    STATE["job"] = job
-    STATE["last_ping"] = time.time()
+        if not bridge.connected:
+            return jsonify({"error": "not connected"}), 400
+        by_path = {i["path"]: i for i in STATE["classified"]}
+        if set(paths) - by_path.keys():
+            return jsonify({"error": "selection is stale; refresh and select again"}), 409
+        items = [{k: by_path[p][k] for k in ("path", "size", "mtime")}
+                 for p in dict.fromkeys(paths)]
+        run_id = f"{int(time.time())}-{os.getpid()}-{threading.get_ident()}"
+        job = {"id": run_id, "state": "running", "total": len(items), "done": 0,
+               "copied": 0, "resumed": 0, "failed": 0, "bytes": 0,
+               "current": "", "started": time.time()}
+        STATE.update({"run_id": run_id, "job_id": run_id, "job": job})
+        dest, udid = STATE["dest"], bridge.udid or "device"
     t = threading.Thread(target=run_export,
-                         args=(paths, STATE["dest"], bridge.udid or "device", job),
-                         daemon=True)
+                         args=(run_id, items, dest, udid, job),
+                         daemon=True, name=f"export-{run_id}")
     STATE["job_thread"] = t
     t.start()
     return jsonify({"ok": True, "job": job})
@@ -434,6 +458,12 @@ def api_ping():
     browser tab is closed (browser-fallback mode has no window to close)."""
     STATE["last_ping"] = time.time()
     return jsonify({"ok": True, "t": STATE["last_ping"]})
+
+
+@app.post("/api/shutdown")
+def api_shutdown():
+    STATE["shutdown_requested"] = time.time()
+    return jsonify({"ok": True, "export_running": bool(STATE.get("run_id"))})
 
 
 @app.get("/api/raise")

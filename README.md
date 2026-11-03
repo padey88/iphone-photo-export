@@ -28,7 +28,7 @@ This app is the missing middle: free, open source, and built around one question
 
 ## Install (Windows 10/11, 64-bit)
 
-1. Download `iPhonePhotoExport-1.0.1-Setup.exe` from [Releases](../../releases/latest).
+1. Download `iPhonePhotoExport-1.0.2-Setup.exe` from [Releases](../../releases/latest).
 2. Run it. Windows asks for administrator rights once, to install Apple's USB device driver.
 3. Done — an **iPhone Photo Export** shortcut is on the desktop and in the Start menu.
 
@@ -65,8 +65,8 @@ Installer size is 144 MB: ffmpeg (~100 MB), the Apple driver (34 MB), and the Py
 
 ### Download
 
-[Latest release](../../releases/latest) · 144 MB · SHA-256
-`a7b06a5b110699c7392df7f92895be174a301f7d1302e3ae37c5ba13018ec5a0`
+[Latest release](../../releases/latest) · 143.6 MB · SHA-256
+`f54798993b566d065372caefdcee0d5a51cdf4bfbacd86d1fcf205d5085b1a37`
 
 The build is unsigned, so SmartScreen may warn — *More info* > *Run anyway*, and check the hash
 above with `certutil -hashfile <file> SHA256`.
@@ -146,10 +146,12 @@ The app does not just copy — it proves the copy:
 
 - every file is written to a `.part` file, size-checked, then renamed into place
 - a full SHA-256 is computed for every file and written to `manifest.csv`
-- a verification pass re-checks that every expected file exists at the expected size
-- `VERIFY.txt` records copied / resumed / failed / missing / mismatch counts
+- a verification pass re-checks existence, size, and SHA-256 against the current export manifest
+- `VERIFY.txt` records copied / resumed / failed / missing / size-mismatch / hash-mismatch counts
 
-The export is flagged safe to delete only when failed, missing and mismatch are all zero.
+The export is flagged safe to delete only when all failure and mismatch counts are zero. SHA-256
+verifies the exported bytes against the hash recorded immediately after USB transfer and detects
+later local modification; it does not independently re-hash the live iPhone file.
 
 ---
 
@@ -284,6 +286,10 @@ End-to-end check of the frozen binary without a phone:
 - **Videos are pulled lazily.** A grid tile for a clip is downloaded only for a poster frame;
   anything over 250 MB shows a placeholder, and previewing a clip over 150 MB asks first.
 - **No telemetry, no network calls at runtime.** The server binds `127.0.0.1` only.
+- **Cache is bounded.** Preview media is capped at 3 GB by default and expires after 14 days.
+  Set `IPHONE_EXPORT_CACHE_MB` to adjust the budget.
+- **Exports survive a closed tab/window.** The local server waits for an active transfer before
+  shutting down; uninstall requests a graceful shutdown rather than killing a transfer.
 
 ## What it does not do
 

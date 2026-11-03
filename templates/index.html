@@ -559,11 +559,12 @@ async function pollJob() {
       banner(
         `<b>${ok ? "Export verified" : "Export finished with problems"}</b><br>
          copied ${j.copied} · resumed ${j.resumed} · failed ${j.failed} ·
-         missing ${j.missing} · size mismatch ${j.mismatch} · ${j.seconds}s<br>
+         missing ${j.missing} · size mismatch ${j.mismatch} ·
+         hash mismatch ${j.hash_mismatch || 0} · ${j.seconds}s<br>
          <code>${j.out_dir}</code><br><br>
          <b>Before deleting on the phone:</b>
          <ol style="margin:6px 0 0 18px;padding:0">
-           <li>VERIFY.txt shows 0 failed / missing / mismatch</li>
+           <li>VERIFY.txt shows 0 failed / missing / size or hash mismatch</li>
            <li>Play 5 random videos from this folder</li>
            <li>Copy the folder to an external drive</li>
            <li>Delete on iPhone, then empty Recently Deleted</li>

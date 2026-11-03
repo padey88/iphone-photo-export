@@ -2,8 +2,13 @@
 
 What has actually been executed, what has not, and why. Updated with each release.
 
-Last run: 2026-11-03, Windows 11 build 26200, clean VM, installer v1.0.1
-(`iPhonePhotoExport-1.0.1-Setup.exe`, SHA-256 `a7b06a5b...18ec5a0`).
+Last run: 2026-11-03, Windows 11 build 26200, clean VM, installer v1.0.2
+(`iPhonePhotoExport-1.0.2-Setup.exe`, 150,585,154 bytes, SHA-256
+`f54798993b566d065372caefdcee0d5a51cdf4bfbacd86d1fcf205d5085b1a37`).
+
+The exact published installer passed silent installation, frozen self-test,
+fake-device export/verification, graceful shutdown, and silent uninstall.
+No physical iPhone was attached; the hardware boundary below still applies.
 
 ## Verified by execution
 
@@ -48,7 +53,13 @@ Last run: 2026-11-03, Windows 11 build 26200, clean VM, installer v1.0.1
 | Browser fallback stays up while pinging | 95 pings over 95s | still running, exits after pings stop |
 | Preview cache respects budget | seed 6×1MB, budget 3MB | trimmed to 2.0MB, oldest evicted |
 | Dead export thread does not wedge | fake `is_alive()=False` | new export accepted (200) |
-| Live export still blocks a second | fake `is_alive()=True` | 409 |
+| Live export still blocks a second | fake `is_alive()=True` / run lock | 409 |
+| Device change after browsing | `tests/test_integrity.py` | fresh transfer, not stale resume |
+| Local content tampering | `tests/test_integrity.py` | SHA-256 mismatch reported |
+| Filtered export history | `tests/test_integrity.py` | successful history retained |
+| Failed current export | current-run manifest | never marked verified |
+| Incomplete inventory | simulated AFC failure | error, not empty library |
+| Disconnect during export | simulated in-flight transfer | rejected |
 | Heartbeats from `/api/ping` and `/api/state` | state inspection | recorded |
 
 ### Engine and API (fake device)

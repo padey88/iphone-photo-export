@@ -50,6 +50,10 @@ if (-not $SkipFetch) {
 }
 $Msi = Join-Path $DriverDir "AppleMobileDeviceSupport64.msi"
 if (-not (Test-Path $Msi)) { throw "Apple driver MSI missing: $Msi" }
+$ffmpeg = Join-Path $Bin "ffmpeg.exe"
+if (-not (Test-Path $ffmpeg)) { throw "ffmpeg missing: $ffmpeg" }
+& $ffmpeg -version | Select-Object -First 1
+if ($LASTEXITCODE -ne 0) { throw "staged ffmpeg is not executable" }
 
 Step "3/6 making the app icon"
 & $Py (Join-Path $PSScriptRoot "make_icon.py")

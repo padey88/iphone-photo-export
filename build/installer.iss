@@ -74,9 +74,8 @@ Filename: "{app}\{#AppExe}"; \
   Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
-; Stop a running instance so the folder can be removed.
-Filename: "{sys}\taskkill.exe"; Parameters: "/f /im {#AppExe}"; \
-  Flags: runhidden skipifdoesntexist; RunOnceId: "KillApp"
+Filename: "{app}\{#AppExe}"; Parameters: "--prepare-uninstall"; \
+  Flags: runhidden waituntilterminated; RunOnceId: "WaitForExports"
 
 [UninstallDelete]
 ; Only things the app itself creates inside {app}; user photos are never touched.

@@ -17,6 +17,7 @@ DIST = ROOT / "payload"
 
 datas = [
     (str(ROOT / "templates"), "templates"),
+    (str(ROOT / "VERSION"), "."),
     (str(ROOT / "assets" / "app.png"), "assets"),
 ]
 # ffmpeg is required for video thumbnails; ffprobe is optional and only added
@@ -33,16 +34,16 @@ hiddenimports = [
     "webview", "clr_loader", "pythonnet",
 ]
 
-for pkg in ("pymobiledevice3", "webview", "pillow_heif", "PIL"):
-    try:
-        d, b, h = collect_all(pkg)
-        datas += d
-        binaries += b
-        hiddenimports += h
-    except Exception as exc:  # pragma: no cover
-        print(f"WARN collect_all({pkg}) failed: {exc}")
+for pkg in ("pymobiledevice3", "pillow_heif", "PIL"):
+    d, b, h = collect_all(pkg)
+    datas += d
+    binaries += b
+    hiddenimports += h
 
-hiddenimports += collect_submodules("pymobiledevice3")
+# WebView2 is a native Windows integration, not an Android/Python cross-platform
+# app. Collecting every pywebview backend adds Qt/GTK/Android import warnings
+# and unnecessary platform code to the installer.
+hiddenimports += ["webview.platforms.winforms"]
 
 # pymobiledevice3 spawns its own subcommands; keep its CLI entry points reachable.
 hiddenimports += ["pymobiledevice3.__main__", "pymobiledevice3.cli"]

@@ -151,6 +151,36 @@ def open_window(url: str) -> bool:
         return False
     try:
         webview.create_window(APP_NAME, url, width=1240, height=820, min_size=(960, 620))
+        import app as webapp
+
+        def focus_when_asked() -> None:
+            last = float(webapp.STATE.get("raise_requested") or 0)
+            while True:
+                time.sleep(0.5)
+                asked = float(webapp.STATE.get("raise_requested") or 0)
+                if asked <= last:
+                    continue
+                last = asked
+                try:
+                    window = webview.windows[0]
+                    window.restore()
+                    window.show()
+                except Exception:
+                    log("could not focus the existing window:\n" + traceback.format_exc())
+
+        threading.Thread(target=focus_when_asked, daemon=True, name="window-focus").start()
+
+        def close_when_asked() -> None:
+            while not webapp.STATE.get("shutdown_requested"):
+                time.sleep(0.5)
+            while webapp.STATE.get("run_id"):
+                time.sleep(1)
+            try:
+                webview.windows[0].destroy()
+            except Exception:
+                log("could not close the window:\n" + traceback.format_exc())
+
+        threading.Thread(target=close_when_asked, daemon=True, name="window-shutdown").start()
         webview.start(private_mode=False)
         return True
     except Exception:
@@ -174,11 +204,18 @@ def browser_mode(url: str, port: int, idle_timeout: float = 180.0) -> int:
     # (or by a previous request), and a stale value would extend the deadline.
     baseline = time.time()
     webapp.STATE["last_ping"] = baseline
-    webbrowser.open(url)
+    if not webbrowser.open(url):
+        log("could not open a browser; open this address manually: " + url)
     log(f"browser mode: opened {url}; will exit after {int(idle_timeout)}s without a client")
     deadline = baseline + 60  # grace for the browser to start and load the page
     while True:
         time.sleep(2)
+        if webapp.STATE.get("shutdown_requested") and not webapp.STATE.get("run_id"):
+            log("shutdown requested; closing the browser-mode server")
+            return 0
+        if webapp.STATE.get("run_id"):
+            deadline = time.time() + idle_timeout
+            continue
         seen = float(webapp.STATE.get("last_ping") or 0)
         if seen > baseline:
             baseline = seen
@@ -259,6 +296,35 @@ def selftest() -> int:
     return 0 if ok else 1
 
 
+def prepare_uninstall() -> int:
+    """Ask our instance to close, waiting for an in-flight export.
+
+    The uninstaller invokes this instead of taskkill /f. No process is killed;
+    an active transfer must finish before its files can be removed.
+    """
+    import json
+    import urllib.request
+
+    port = int(os.environ.get("IPHONE_EXPORT_PORT", 8765))
+    if not existing_instance(port):
+        return 0
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/api/shutdown", data=b"{}",
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=10):
+            pass
+    except Exception as exc:
+        log(f"could not request shutdown: {exc}")
+        return 1
+    deadline = time.time() + 24 * 3600
+    while time.time() < deadline:
+        if not existing_instance(port):
+            return 0
+        time.sleep(2)
+    log("timed out waiting for the running app to close")
+    return 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog=APP_NAME)
     ap.add_argument("--port", type=int, default=0)
@@ -266,6 +332,7 @@ def main() -> int:
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--fake", metavar="FOLDER")
     ap.add_argument("--open-browser", action="store_true")
+    ap.add_argument("--prepare-uninstall", action="store_true")
     args = ap.parse_args()
 
     if args.fake:
@@ -274,6 +341,9 @@ def main() -> int:
     if args.selftest:
         prepare_env()
         return selftest()
+
+    if args.prepare_uninstall:
+        return prepare_uninstall()
 
     prepare_env()
     default_port = int(os.environ.get("IPHONE_EXPORT_PORT", 8765))
@@ -288,7 +358,6 @@ def main() -> int:
             urllib.request.urlopen(f"http://127.0.0.1:{default_port}/api/raise", timeout=3).read()
         except Exception:
             pass
-        webbrowser.open(f"http://127.0.0.1:{default_port}/")
         return 0
 
     port = args.port or free_port(default_port)
@@ -302,12 +371,19 @@ def main() -> int:
     if args.serve:
         log("serve mode: press Ctrl+C to stop")
         try:
-            while True:
-                time.sleep(3600)
+            import app as webapp
+            while not webapp.STATE.get("shutdown_requested"):
+                time.sleep(1)
+            return 0
         except KeyboardInterrupt:
             return 0
 
     if not args.open_browser and open_window(url):
+        import app as webapp
+        if webapp.STATE.get("run_id"):
+            log("window closed; waiting for the active export to finish")
+            while webapp.STATE.get("run_id"):
+                time.sleep(1)
         log("window closed; exiting")
         return 0
 

@@ -13,9 +13,10 @@ import asyncio
 import os
 import posixpath
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
+import exporter
 from exporter import MEDIA_EXT
 
 
@@ -47,7 +48,7 @@ class _FakeAfc:
 
     async def stat(self, path: str) -> dict:
         st = self._p(path).stat()
-        return {"st_size": st.st_size, "st_mtime": datetime.fromtimestamp(st.st_mtime)}
+        return {"st_size": st.st_size, "st_mtime": datetime.fromtimestamp(st.st_mtime, timezone.utc)}
 
     async def pull(self, src: str, dst: str, progress_bar: bool = False) -> None:
         data = self._p(src).read_bytes()
@@ -69,6 +70,10 @@ class DeviceBridge:
         self._thread.start()
         self._afc = None
         self._lockdown = None
+        self._busy = False
+        self._inventory_generation = 0
+        self._inventories: dict[int, dict[str, dict]] = {}
+        self._active_inventory: int | None = None
         self.udid: str | None = None
         self.info: dict = {}
         self.fake_root = os.environ.get("IPHONE_EXPORT_FAKE")
@@ -78,7 +83,7 @@ class DeviceBridge:
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
 
-    def call(self, coro, timeout: float = 300):
+    def call(self, coro, timeout: float | None = 300):
         if not self._loop.is_running():
             raise DeviceError("background loop is not running")
         return asyncio.run_coroutine_threadsafe(coro, self._loop).result(timeout=timeout)
@@ -95,6 +100,8 @@ class DeviceBridge:
         return self.call(self._list_devices(), timeout=30)
 
     def connect(self, udid: str | None = None) -> dict:
+        if self._busy:
+            raise DeviceError("Stop the running export before reconnecting the iPhone.")
         self.disconnect()
         if self.fake_root:
             root = Path(self.fake_root).expanduser().resolve()
@@ -104,30 +111,86 @@ class DeviceBridge:
             self.udid = "FAKE-DEVICE"
             self.info = {"udid": self.udid, "name": "Fake iPhone (demo)",
                          "model": "iPhone12,3", "ios": "17.0"}
+            self._inventories.clear()
+            self._active_inventory = None
             return self.info
         return self.call(self._connect(udid), timeout=90)
 
     def disconnect(self) -> None:
+        if self._busy:
+            raise DeviceError("Stop the running export before disconnecting the iPhone.")
         if self._afc is None:
             return
-        try:
-            self.call(self._disconnect(), timeout=20)
-        except Exception:
-            pass
+        afc = self._afc
         self._afc = None
-        self._lockdown = None
-        self.udid = None
-        self.info = {}
+        try:
+            self.call(self._disconnect(afc), timeout=20)
+        finally:
+            self._lockdown = None
+            self.udid = None
+            self.info = {}
 
     def inventory(self, root: str = "/DCIM") -> list[dict]:
         if not self._afc:
             raise DeviceError("not connected")
-        return self.call(self._inventory(root), timeout=300)
+        if self._busy:
+            raise DeviceError("An export is running; wait for it to finish before refreshing.")
+        result = self.call(self._inventory(root), timeout=None)
+        self._inventory_generation += 1
+        self._inventories = {self._inventory_generation: {i["path"]: i for i in result}}
+        self._active_inventory = self._inventory_generation
+        return result
 
-    def pull(self, device_path: str, local_path: Path) -> None:
+    def export_items(self, items, out_dir, on_progress, on_error):
+        """Serialize a transfer on the dedicated AFC event loop.
+
+        A transfer can span hours, so it cannot share call()'s short operation
+        timeout. Previews continue against the last completed device snapshot.
+        """
         if not self._afc:
             raise DeviceError("not connected")
-        self.call(self._afc.pull(device_path, str(local_path), progress_bar=False), timeout=3600)
+        if self._busy:
+            raise DeviceError("another device operation is already running")
+        if self._active_inventory is not None:
+            self._inventories = {self._active_inventory:
+                                 self._inventories[self._active_inventory]}
+        self._busy = True
+        try:
+            return self.call(self._export(items, out_dir, on_progress, on_error), timeout=None)
+        finally:
+            self._busy = False
+
+    async def _export(self, items, out_dir, on_progress, on_error):
+        afc = self._afc
+        if afc is None:
+            raise DeviceError("not connected")
+        refreshed = []
+        for item in items:
+            try:
+                st = await afc.stat(item["path"])
+                mtime = st.get("st_mtime")
+                if isinstance(mtime, datetime):
+                    if mtime.tzinfo is None:
+                        mtime = mtime.replace(tzinfo=timezone.utc)
+                    epoch = int(mtime.timestamp())
+                else:
+                    epoch = int(mtime or 0)
+                current = {**item, "size": int(st["st_size"]), "source_mtime": epoch}
+            except Exception as exc:
+                # Keep the requested metadata so verification cannot mistake a
+                # missing device file for a valid copy of a newly changed one.
+                current = {**item, "device_error": str(exc)}
+            refreshed.append(current)
+        return await exporter.copy_items(afc, refreshed, out_dir,
+                                         on_progress=on_progress, on_error=on_error)
+
+    def pull(self, device_path: str, local_path: Path) -> None:
+        afc = self._afc
+        if afc is None:
+            raise DeviceError("not connected")
+        if self._busy:
+            raise DeviceError("An export is running; previews will be available afterwards.")
+        self.call(afc.pull(device_path, str(local_path), progress_bar=False), timeout=3600)
 
     def afc(self):
         return self._afc
@@ -146,8 +209,8 @@ class DeviceBridge:
         for d in raw:
             out.append({
                 "udid": getattr(d, "serial", ""),
-                "name": getattr(d, "device_name", None) or "iPhone",
-                "model": getattr(d, "product_id", None) or "",
+                "name": "iPhone",
+                "model": "",
                 "ios": "",
                 "connection": getattr(d, "connection_type", "USB"),
             })
@@ -180,6 +243,11 @@ class DeviceBridge:
         except Exception as exc:
             detail = f"{type(exc).__name__}: {exc}"
             low = detail.lower()
+            if self._lockdown is not None:
+                try:
+                    await self._lockdown.close()
+                except Exception:
+                    pass
             self._lockdown = None
             self._afc = None
             if "password" in low or "trust" in low or "pair" in low or "not paired" in low:
@@ -206,24 +274,37 @@ class DeviceBridge:
         except Exception:
             pass
         self.info = info
+        # Older UDIDs may be hyphenated in usbmuxd but not in Lockdown. Always
+        # use the device's canonical identifier for destination folder stability.
+        try:
+            self.udid = self._lockdown.udid or self.udid
+            self.info["udid"] = self.udid
+        except Exception:
+            pass
         return info
 
-    async def _disconnect(self) -> None:
+    async def _disconnect(self, afc=None) -> None:
+        afc = afc if afc is not None else self._afc
+        lockdown = self._lockdown
+        self._afc = None
+        self._lockdown = None
         try:
-            await self._afc.__aexit__(None, None, None)
+            if afc is not None and not isinstance(afc, _FakeAfc):
+                await afc.__aexit__(None, None, None)
         finally:
-            self._afc = None
-            self._lockdown = None
+            if lockdown is not None:
+                await lockdown.close()
 
     async def _inventory(self, root: str) -> list[dict]:
         afc = self._afc
         items: list[dict] = []
+        failures: list[str] = []
 
         async def rec(path: str) -> None:
             try:
                 entries = await afc.listdir(path)
-            except Exception:
-                return
+            except Exception as exc:
+                raise DeviceError(f"cannot read {path}: {exc}") from exc
             for name in entries:
                 full = posixpath.join(path, name)
                 try:
@@ -231,18 +312,30 @@ class DeviceBridge:
                         await rec(full)
                         continue
                     st = await afc.stat(full)
-                except Exception:
+                except Exception as exc:
+                    failures.append(f"{full}: {exc}")
                     continue
                 if Path(name).suffix.lower() not in MEDIA_EXT:
                     continue
                 mtime = st.get("st_mtime")
+                # pymobiledevice3 returns a UTC datetime for AFC mtimes. Never
+                # interpret it in the PC's timezone or shift it by that offset.
+                if isinstance(mtime, datetime):
+                    if getattr(mtime, "tzinfo", None) is None:
+                        mtime = mtime.replace(tzinfo=timezone.utc)
+                    epoch = int(mtime.timestamp())
+                else:
+                    epoch = int(mtime or 0)
                 items.append({
                     "path": full,
                     "name": name,
                     "size": int(st["st_size"]),
-                    "mtime": int(mtime.timestamp()) if hasattr(mtime, "timestamp") else int(mtime or 0),
+                    "mtime": epoch,
                 })
 
         await rec(root)
+        if failures:
+            raise DeviceError("Inventory incomplete; reconnect and retry. "
+                              + " | ".join(failures[:5]))
         items.sort(key=lambda x: x["mtime"], reverse=True)
         return items

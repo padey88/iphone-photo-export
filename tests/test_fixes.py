@@ -98,11 +98,14 @@ class _Alive:
 
 
 webapp.STATE["job"] = {"state": "running"}
+webapp.STATE["run_id"] = "test-active-export"
 webapp.STATE["job_thread"] = _Alive()
 r = client.post("/api/export", json={"paths": [state_path]})
 check(r.status_code == 409, f"a live export still blocks a second one (got {r.status_code})")
 webapp.STATE["job"] = None
 webapp.STATE["job_thread"] = None
+webapp.STATE["run_id"] = None
+webapp.STATE["job_id"] = None
 
 print("browser-mode idle watchdog")
 webapp.STATE["last_ping"] = 0
