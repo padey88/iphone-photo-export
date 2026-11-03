@@ -316,6 +316,13 @@ build/              PyInstaller spec, Inno Setup script, build + verify scripts
 tests/              fake-device fixtures + tests
 ```
 
+## Changelog
+
+Every release is documented in [CHANGELOG.md](CHANGELOG.md) — including the
+verification-boundary wording, so you can tell what a hash check does and does
+not prove. Work merged to `main` but not yet in an installer is listed under
+**Unreleased** there.
+
 ## License
 
 MIT. The demo screenshots use photographs from [Lorem Picsum](https://picsum.photos)
