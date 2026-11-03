@@ -9,6 +9,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import filters
+
 MEDIA_EXT = {
     ".jpg", ".jpeg", ".heic", ".heif", ".png", ".gif", ".tif", ".tiff",
     ".dng", ".mov", ".mp4", ".m4v", ".avi", ".aae",
@@ -33,17 +35,42 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def local_path_for(out_dir: Path, device_path: str) -> Path:
+def local_path_for(out_dir: Path, device_path: str, layout: str = "source",
+                   item: dict | None = None) -> Path:
     # Inventory paths originate from a trusted AFC session, but still constrain
     # them to the chosen output directory before constructing a local path.
     parts = [part for part in device_path.replace("\\", "/").split("/")
              if part not in ("", ".")]
     if any(part == ".." or ":" in part for part in parts):
         raise ValueError(f"unsafe device path: {device_path!r}")
+    if layout == "category":
+        kind = filters.classify([{"path": device_path, "name": parts[-1],
+                                  "ext": Path(parts[-1]).suffix.lower(),
+                                  "mtime": int((item or {}).get("mtime", 0)),
+                                  "size": int((item or {}).get("size", 0))}], {})[0]["kind"]
+        folder = {"photo": "Photos", "live": "Live Photos", "video": "Videos",
+                  "recording": "Screen Recordings", "screenshot": "Screenshots",
+                  "live_mov": "Live Photo Videos"}.get(kind, "Other")
+        parts = [folder, parts[-1]]
+    elif layout == "date":
+        month = datetime.fromtimestamp(int((item or {}).get("mtime", 0))).strftime("%Y-%m")
+        parts = [month, parts[-1]]
+    elif layout != "source":
+        raise ValueError("layout must be source, category or date")
     local = out_dir.joinpath(*parts)
     if not local.is_relative_to(out_dir):
         raise ValueError(f"device path escapes output folder: {device_path!r}")
     return local
+
+
+def unique_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    for n in range(2, 10000):
+        candidate = path.with_name(f"{path.stem} ({n}){path.suffix}")
+        if not candidate.exists():
+            return candidate
+    raise FileExistsError(f"no available destination name for {path.name}")
 
 
 def device_mtime(item: dict) -> int:
@@ -68,7 +95,8 @@ def _current_resumable_row(local: Path, item: dict, existing: dict | None) -> li
     return [item["path"], str(local), item["size"], device_mtime(item), digest, "resumed"]
 
 
-async def copy_items(afc, items, out_dir: Path, on_progress=None, on_error=None) -> dict:
+async def copy_items(afc, items, out_dir: Path, on_progress=None, on_error=None,
+                     layout: str = "source") -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     old_index = manifest_index(out_dir)
     rows: list[list] = []
@@ -78,9 +106,18 @@ async def copy_items(afc, items, out_dir: Path, on_progress=None, on_error=None)
     for idx, item in enumerate(items, 1):
         item = dict(item)
         item["mtime"] = device_mtime(item)
-        local = local_path_for(out_dir, item["path"])
-        local.parent.mkdir(parents=True, exist_ok=True)
         existing = old_index.get(item["path"])
+        if existing and existing.get("local_path"):
+            # Continue an existing export at its recorded location. Changing the
+            # UI layout later must not duplicate files already verified elsewhere.
+            local = Path(existing["local_path"])
+            if not local.is_relative_to(out_dir):
+                raise ValueError(f"manifest path escapes export folder: {local}")
+        else:
+            local = local_path_for(out_dir, item["path"], layout, item)
+            if layout != "source":
+                local = unique_path(local)
+        local.parent.mkdir(parents=True, exist_ok=True)
 
         if item.get("device_error"):
             rows.append([item["path"], str(local), item["size"], item["mtime"], "",
@@ -168,15 +205,21 @@ def verify_items(items, out_dir: Path, manifest_rows=None) -> dict:
     it does not claim to re-hash the live iPhone file.
     """
     if manifest_rows is not None:
-        expected_rows = {row[0]: {"sha256": row[4], "status": row[5]}
+        expected_rows = {row[0]: {"sha256": row[4], "status": row[5], "local_path": row[1]}
                          for row in manifest_rows if row[5] in ("copied", "resumed")}
     else:
         expected_rows = manifest_index(out_dir)
     missing, mismatch, hash_mismatch, missing_hash = [], [], [], []
     for item in items:
         path = item["path"]
-        local = local_path_for(out_dir, path)
         row = expected_rows.get(path)
+        local = local_path_for(out_dir, path, (item or {}).get("layout", "source"), item)
+        if row and row.get("local_path"):
+            candidate = Path(row["local_path"])
+            if not candidate.is_relative_to(out_dir):
+                mismatch.append(path)
+                continue
+            local = candidate
         try:
             if not local.is_file():
                 missing.append(path)

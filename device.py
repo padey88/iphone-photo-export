@@ -50,6 +50,19 @@ class _FakeAfc:
         st = self._p(path).stat()
         return {"st_size": st.st_size, "st_mtime": datetime.fromtimestamp(st.st_mtime, timezone.utc)}
 
+    async def rm_single(self, path: str, force: bool = False) -> bool:
+        """Delete exactly one fake-device file, mirroring AFC rm_single."""
+        p = self._p(path)
+        try:
+            if not p.is_file():
+                raise FileNotFoundError(path)
+            p.unlink()
+            return True
+        except OSError:
+            if force:
+                return False
+            raise
+
     async def pull(self, src: str, dst: str, progress_bar: bool = False) -> None:
         data = self._p(src).read_bytes()
         Path(dst).parent.mkdir(parents=True, exist_ok=True)
@@ -141,7 +154,7 @@ class DeviceBridge:
         self._active_inventory = self._inventory_generation
         return result
 
-    def export_items(self, items, out_dir, on_progress, on_error):
+    def export_items(self, items, out_dir, on_progress, on_error, layout="source"):
         """Serialize a transfer on the dedicated AFC event loop.
 
         A transfer can span hours, so it cannot share call()'s short operation
@@ -156,11 +169,11 @@ class DeviceBridge:
                                  self._inventories[self._active_inventory]}
         self._busy = True
         try:
-            return self.call(self._export(items, out_dir, on_progress, on_error), timeout=None)
+            return self.call(self._export(items, out_dir, on_progress, on_error, layout), timeout=None)
         finally:
             self._busy = False
 
-    async def _export(self, items, out_dir, on_progress, on_error):
+    async def _export(self, items, out_dir, on_progress, on_error, layout="source"):
         afc = self._afc
         if afc is None:
             raise DeviceError("not connected")
@@ -182,7 +195,8 @@ class DeviceBridge:
                 current = {**item, "device_error": str(exc)}
             refreshed.append(current)
         return await exporter.copy_items(afc, refreshed, out_dir,
-                                         on_progress=on_progress, on_error=on_error)
+                                         on_progress=on_progress, on_error=on_error,
+                                         layout=layout)
 
     def pull(self, device_path: str, local_path: Path) -> None:
         afc = self._afc
@@ -191,6 +205,34 @@ class DeviceBridge:
         if self._busy:
             raise DeviceError("An export is running; previews will be available afterwards.")
         self.call(afc.pull(device_path, str(local_path), progress_bar=False), timeout=3600)
+
+    def file_state(self, device_path: str) -> dict:
+        """Read current device size/mtime immediately before a destructive action."""
+        afc = self._afc
+        if afc is None:
+            raise DeviceError("iPhone not detected")
+        st = self.call(afc.stat(device_path), timeout=60)
+        mtime = st.get("st_mtime")
+        if isinstance(mtime, datetime):
+            if mtime.tzinfo is None:
+                mtime = mtime.replace(tzinfo=timezone.utc)
+            epoch = int(mtime.timestamp())
+        else:
+            epoch = int(mtime or 0)
+        return {"size": int(st["st_size"]), "mtime": epoch}
+
+    def delete_file(self, device_path: str) -> None:
+        """Delete exactly one file after the application-level verification gate."""
+        afc = self._afc
+        if afc is None:
+            raise DeviceError("iPhone not detected")
+        if self._busy:
+            raise DeviceError("An export is running; wait for it to finish.")
+        if not device_path.startswith("/DCIM/") or device_path.endswith("/"):
+            raise DeviceError("Only individual files below /DCIM can be deleted.")
+        if ".." in device_path.split("/") or Path(device_path).suffix.lower() not in MEDIA_EXT:
+            raise DeviceError("Refusing to delete a non-media or invalid device path.")
+        self.call(afc.rm_single(device_path), timeout=120)
 
     def afc(self):
         return self._afc

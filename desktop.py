@@ -268,6 +268,17 @@ def selftest() -> int:
     check("ffmpeg", ffmpeg)
     check("templates", lambda: (resource_dir() / "templates" / "index.html").stat().st_size)
 
+    def workflow_controls() -> str:
+        html = (resource_dir() / "templates" / "index.html").read_text(encoding="utf-8")
+        required = ["favorites", "btnDefault", "viewCategory", "displayMode",
+                    "mediaTable", "exportLayout", "btnVerify", "btnCleanup"]
+        missing = [name for name in required if f'id="{name}"' not in html]
+        if missing:
+            raise RuntimeError(f"missing UI controls: {missing}")
+        return f"{len(required)} controls"
+
+    check("workflow controls", workflow_controls)
+
     port = free_port()
     check("server", lambda: "listening" if (start_server(port) and wait_ready(port)) else "FAILED")
 

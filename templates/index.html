@@ -97,7 +97,7 @@
 <body>
 <header>
   <h1>iPhone Photo Export</h1>
-  <span id="status"><span class="dot"></span><span id="statusText">not connected</span></span>
+  <span id="status"><span class="dot"></span><span id="statusText">iPhone not detected</span></span>
   <span class="grow"></span>
   <label class="muted" for="dest">Destination</label>
   <input id="dest" size="34" placeholder="D:\iphone-backup">
@@ -110,6 +110,11 @@
 
 <div class="layout">
   <aside>
+    <h3>Export location</h3>
+    <select id="favorites" aria-label="Favorite export folders" style="width:100%;margin-bottom:8px"><option value="">Favorite folders</option></select>
+    <div class="row"><button id="btnDefault" title="Use this folder on future launches">Save as default</button>
+      <button id="btnFavorite" title="Save this folder as a favorite">Add favorite</button></div>
+    <div class="row" style="margin-top:8px"><button id="btnRemoveFavorite" title="Remove selected favorite">Remove favorite</button></div>
     <h3>Presets</h3>
     <div class="chips" id="presets"></div>
 
@@ -163,13 +168,21 @@
 
   <main>
     <div class="toolbar">
+      <select id="viewCategory" aria-label="Category view"><option value="category">Category view</option><option value="all">All media</option></select>
+      <select id="categoryKind" aria-label="Media category"><option value="photo">Photos</option><option value="video">Videos</option><option value="live">Live Photos</option></select>
+      <select id="displayMode" aria-label="Display mode"><option value="list">Details list</option><option value="grid">Thumbnails</option></select>
       <span id="counts" class="muted">No device connected</span>
       <span class="grow"></span>
       <button id="btnAll">Select all shown</button>
       <button id="btnNone">Clear selection</button>
       <button id="btnSelBig" class="hidden">Only big files</button>
     </div>
-    <div class="grid" id="grid"></div>
+    <div id="listWrap" style="overflow:auto;min-height:0;flex:1">
+      <table id="mediaTable" style="width:100%;border-collapse:collapse;font-size:12px" aria-label="Media details">
+        <thead><tr id="mediaHead"></tr></thead><tbody id="mediaBody"></tbody>
+      </table>
+    </div>
+    <div class="grid hidden" id="grid"></div>
   </main>
 
   <div class="drawer" id="drawer">
@@ -190,13 +203,19 @@
   <span id="selInfo" class="muted">Nothing selected</span>
   <div class="bar"><i id="barFill"></i></div>
   <span id="barText" class="muted"></span>
+  <select id="exportLayout" aria-label="Export folder structure" title="Export folder structure"><option value="source">Source folders</option><option value="category">Category folders</option><option value="date">Date (YYYY-MM)</option></select>
+  <button id="btnVerify" disabled>Verify</button>
+  <button id="btnCleanup" class="hidden" title="Delete originals only after verification">Delete verified originals</button>
   <button id="btnExport" class="primary" disabled>Export selected</button>
 </div>
 
 <script>
 const $ = (s) => document.querySelector(s);
 const state = { items: [], shown: [], selected: new Set(), device: null, current: null,
-                rendered: 0, chunk: 120, job: null, kinds: new Set() };
+                rendered: 0, chunk: 120, job: null, kinds: new Set(),
+                category: "category", categoryKind: "photo", display: "list",
+                sortKey: "mtime", sortDir: -1, focusPath: null, anchorPath: null,
+                lastVerifiedSelection: null, preferences: {favorites: []} };
 
 function api(path, body) {
   return fetch(path, {
@@ -229,6 +248,7 @@ async function boot() {
   try {
     const s = await api("/api/state");
     $("#dest").value = s.dest;
+    renderPreferences(s.preferences);
     if (s.fake) banner("Running against a <b>fake device</b> (demo data, no phone).", "warn");
     renderPresets(s.presets);
     renderKinds(s.kinds);
@@ -251,6 +271,46 @@ function renderPresets(presets) {
   });
 }
 
+function renderPreferences(prefs) {
+  state.preferences = prefs || {favorites: []};
+  $("#favorites").innerHTML = '<option value="">Favorite folders</option>' +
+    state.preferences.favorites.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join("");
+}
+function toast(message, cls = "info") { banner(message, cls); }
+async function saveDest() {
+  const r = await api("/api/config", {dest: $("#dest").value});
+  $("#dest").value = r.dest;
+  return r;
+}
+$("#favorites").onchange = async () => {
+  if (!$("#favorites").value) return;
+  $("#dest").value = $("#favorites").value;
+  await saveDest();
+};
+$("#btnDefault").onclick = async () => {
+  const r = await api("/api/config", {save_default: true});
+  renderPreferences(r.preferences); toast("Default export folder saved");
+};
+$("#btnFavorite").onclick = async () => {
+  const r = await api("/api/config", {favorite: $("#dest").value});
+  renderPreferences(r.preferences); toast("Favorite export folder saved");
+};
+$("#btnRemoveFavorite").onclick = async () => {
+  if (!$("#favorites").value) return;
+  const r = await api("/api/config", {remove_favorite: $("#favorites").value});
+  renderPreferences(r.preferences); toast("Favorite removed");
+};
+$("#viewCategory").onchange = () => { state.category = $("#viewCategory").value;
+  $("#categoryKind").classList.toggle("hidden", state.category === "all");
+  if (state.category === "all") state.kinds.clear();
+  else state.kinds = new Set([state.categoryKind]);
+  document.querySelectorAll("#kinds input").forEach(i => i.checked = state.category !== "all" && i.value === state.categoryKind);
+  refilter(); };
+$("#categoryKind").onchange = () => { state.categoryKind = $("#categoryKind").value;
+  document.querySelectorAll("#kinds input").forEach(i => i.checked = i.value === state.categoryKind);
+  state.kinds = new Set([state.categoryKind]); refilter(); };
+$("#displayMode").onchange = () => { state.display = $("#displayMode").value; renderGrid(); };
+
 function renderKinds(kinds) {
   $("#kinds").innerHTML = "";
   kinds.forEach(k => {
@@ -259,6 +319,9 @@ function renderKinds(kinds) {
     row.innerHTML = `<label><input type="checkbox" value="${k.id}"> ${k.label}</label>`;
     row.querySelector("input").onchange = (e) => {
       e.target.checked ? state.kinds.add(k.id) : state.kinds.delete(k.id);
+      state.category = "preset";
+      $("#viewCategory").value = "all";
+      $("#categoryKind").classList.add("hidden");
       applyFilters();
     };
     $("#kinds").appendChild(row);
@@ -266,6 +329,9 @@ function renderKinds(kinds) {
 }
 
 function applyPreset(spec) {
+  state.category = "preset";
+  $("#viewCategory").value = "all";
+  $("#categoryKind").classList.add("hidden");
   $("#dateMode").value = spec.date_mode || "all";
   if (spec.date) $("#date1").value = spec.date;
   if (spec.date_from) $("#date1").value = spec.date_from;
@@ -291,7 +357,8 @@ function toggleDateRows() {
 
 function currentSpec() {
   const m = $("#dateMode").value;
-  const spec = {date_mode: m, kinds: [...state.kinds],
+  const spec = {date_mode: m,    kinds: state.category === "category" ? [state.categoryKind] :
+      state.category === "preset" ? [...state.kinds] : [],
                 exported: $("#exported").value,
                 q: $("#q").value, keep_pairs: $("#keepPairs").checked};
   if (m === "older" || m === "newer") spec.date = $("#date1").value;
@@ -302,10 +369,17 @@ function currentSpec() {
 }
 
 // ---------- connection ----------
+function mergeInventory(items) {
+  const previous = new Map(state.items.map(i => [i.path, i]));
+  state.items = items.map(i => {
+    const old = previous.get(i.path);
+    return old?.metadata ? {...i, metadata: old.metadata, created: old.created, location: old.location} : i;
+  });
+}
 function setConnected(device) {
   state.device = device;
   $("#status").querySelector(".dot").classList.add("on");
-  $("#statusText").textContent = device ? `${device.name || "iPhone"} · ${device.model || ""}` : "connected";
+  $("#statusText").textContent = device ? `${device.model || "iPhone"} · iOS ${device.ios || "unknown"} · ${device.name || "Unnamed device"}` : "iPhone not detected";
   $("#btnConnect").textContent = "Disconnect";
   $("#btnRefresh").classList.remove("hidden");
 }
@@ -315,10 +389,10 @@ async function connect() {
     await api("/api/disconnect", {});
     state.device = null; state.items = []; state.selected.clear();
     $("#status").querySelector(".dot").classList.remove("on");
-    $("#statusText").textContent = "not connected";
+    $("#statusText").textContent = "iPhone not detected";
     $("#btnConnect").textContent = "Connect iPhone";
     $("#btnRefresh").classList.add("hidden");
-    render(); return;
+    renderGrid(); return;
   }
   banner("Looking for a connected iPhone…", "warn");
   try {
@@ -332,7 +406,7 @@ async function connect() {
     }
     const r = await api("/api/connect", {udid});
     setConnected(r.device);
-    state.items = r.items;
+    mergeInventory(r.items);
     banner("", null);
     await applyFilters();
   } catch (e) { banner(e.message, "err"); }
@@ -341,27 +415,34 @@ async function connect() {
 async function refresh() {
   try {
     const r = await api("/api/refresh", {});
-    state.items = r.items;
+    mergeInventory(r.items);
     await applyFilters();
   } catch (e) { banner(e.message, "err"); }
 }
 
 // ---------- filtering + grid ----------
+let filterRequest = 0;
 async function applyFilters() {
   if (!state.device) return;
+  const requestId = ++filterRequest;
   try {
     const r = await api("/api/filter", currentSpec());
+    if (requestId !== filterRequest) return;
     state.shown = r.items;
+    document.querySelectorAll("#kinds input").forEach(i =>
+      i.checked = state.category === "category" ? i.value === state.categoryKind : state.kinds.has(i.value));
     state.rendered = 0;
     // drop selections that are no longer visible
     const visible = new Set(state.shown.map(i => i.path));
     for (const p of [...state.selected]) if (!visible.has(p)) state.selected.delete(p);
-    render();
+    renderGrid();
     updateFoot(r.summary);
   } catch (e) { banner(e.message, "err"); }
 }
 
 function updateFoot(sum) {
+  if (state.lastVerifiedSelection && (state.lastVerifiedSelection.length !== state.selected.size ||
+      state.lastVerifiedSelection.some(p => !state.selected.has(p)))) state.lastVerifiedSelection = null;
   if (sum) state.summary = sum;
   sum = sum || state.summary;
   const n = state.selected.size;
@@ -371,10 +452,49 @@ function updateFoot(sum) {
     ? `${n} selected · ${fmtBytes(bytes)}`
     : `Nothing selected · ${sum ? sum.count : 0} files shown`;
   $("#btnExport").disabled = n === 0;
+  $("#btnVerify").disabled = n === 0;
+  const verified = state.lastVerifiedSelection && state.lastVerifiedSelection.length === n &&
+    [...state.selected].every(p => state.lastVerifiedSelection.includes(p));
+  $("#btnCleanup").classList.toggle("hidden", !verified);
   $("#btnExport").textContent = n ? `Export ${n} files` : "Export selected";
   $("#counts").textContent = sum
     ? `${sum.count} of ${state.items.length} files · ${fmtBytes(sum.bytes)}`
     : "";
+}
+
+function esc(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function renderGrid() {
+  $("#listWrap").classList.toggle("hidden", state.display !== "list");
+  $("#grid").classList.toggle("hidden", state.display !== "grid");
+  const sort = state.sortKey;
+  state.shown.sort((a, b) => {
+    const av = a[sort] ?? "", bv = b[sort] ?? "";
+    return (typeof av === "number" ? av - bv : String(av).localeCompare(String(bv))) * state.sortDir;
+  });
+  state.rendered = 0;
+  if (state.display === "list") renderList();
+  else render();
+  updateFoot();
+}
+const COLUMNS = [["name","Filename"],["created","Created"],["date","Modified"],["albums","Albums"],["mb","Size (MB)"],["location","Location"]];
+function renderList() {
+  $("#mediaHead").innerHTML = '<th style="padding:8px"><input type="checkbox" id="headAll" aria-label="Select all filtered objects"></th>' + COLUMNS.map(([key,label]) =>
+    `<th data-sort="${key}" style="padding:8px;text-align:left;cursor:pointer;border-bottom:1px solid var(--line)">${label} ${state.sortKey === key ? (state.sortDir > 0 ? "▲" : "▼") : ""}</th>`).join("");
+  $("#mediaHead").querySelectorAll("[data-sort]").forEach(th => th.onclick = () => {
+    const key = th.dataset.sort;
+    if (state.sortKey === key) state.sortDir *= -1; else { state.sortKey = key; state.sortDir = 1; }
+    renderGrid();
+  });
+  $("#headAll").checked = state.shown.length > 0 && state.shown.every(i => state.selected.has(i.path));
+  $("#headAll").onclick = () => $("#headAll").checked ? selectAll() : clearSelection();
+  $("#mediaBody").innerHTML = state.shown.map(it => `<tr tabindex="0" data-path="${esc(it.path)}" class="${state.selected.has(it.path) ? "sel" : ""}" style="cursor:pointer;border-bottom:1px solid var(--line);background:${state.selected.has(it.path) ? "var(--sel)" : "transparent"}">
+    <td style="padding:7px"><input type="checkbox" tabindex="-1" ${state.selected.has(it.path) ? "checked" : ""} aria-label="Select ${esc(it.name)}"></td>
+    ${COLUMNS.map(([key]) => `<td style="padding:7px;white-space:nowrap">${esc(key === "created" ? (it.created || "Load in preview") : key === "albums" ? "Unavailable via AFC" : key === "location" ? "Load in preview" : it[key])}</td>`).join("")}</tr>`).join("");
+  $("#mediaBody").querySelectorAll("tr").forEach(row => {
+    row.onclick = e => selectWithModifiers(row.dataset.path, e);
+    row.ondblclick = e => { e.preventDefault(); openPreview(row.dataset.path); };
+    row.onfocus = () => { state.focusPath = row.dataset.path; };
+  });
 }
 
 function render() {
@@ -422,7 +542,10 @@ function card(it) {
     e.stopPropagation();
     toggleSelect(it.path);
   };
-  el.onclick = () => openPreview(it.path);
+  el.onclick = (event) => {
+    if (event.ctrlKey || event.metaKey || event.shiftKey) selectWithModifiers(it.path, event);
+    else openPreview(it.path);
+  };
   return el;
 }
 
@@ -472,22 +595,86 @@ function toggleSelect(path) {
   updateFoot();
   if (state.current === path) syncDrawerButton();
 }
+function selectWithModifiers(path, event = {}) {
+  const index = state.shown.findIndex(i => i.path === path);
+  if (index < 0) return;
+  state.focusPath = path;
+  if (event.shiftKey && state.anchorPath) {
+    const anchor = state.shown.findIndex(i => i.path === state.anchorPath);
+    const lo = Math.min(anchor, index), hi = Math.max(anchor, index);
+    if (!event.ctrlKey && !event.additive) state.selected.clear();
+    state.shown.slice(lo, hi + 1).forEach(i => state.selected.add(i.path));
+  } else if (event.ctrlKey || event.metaKey) {
+    if (state.selected.has(path)) state.selected.delete(path); else state.selected.add(path);
+    state.anchorPath = path;
+  } else {
+    state.selected.clear(); state.selected.add(path); state.anchorPath = path;
+  }
+  refreshSelection();
+}
+function refreshSelection() {
+  document.querySelectorAll(".card").forEach(c => {
+    const selected = state.selected.has(c.dataset.path);
+    c.classList.toggle("sel", selected); c.querySelector(".tick").textContent = selected ? "✓" : "";
+  });
+  if (state.display === "list") renderList();
+  updateFoot();
+  if (state.current) syncDrawerButton();
+}
 function cssEscape(s) { return s.replace(/["\\]/g, "\\$&"); }
 
 function selectAll() {
   state.shown.forEach(i => state.selected.add(i.path));
-  document.querySelectorAll(".card").forEach(c => {
-    c.classList.add("sel"); c.querySelector(".tick").textContent = "✓";
-  });
-  updateFoot();
+  refreshSelection();
 }
 function clearSelection() {
   state.selected.clear();
+  state.lastVerifiedSelection = null;
   document.querySelectorAll(".card").forEach(c => {
     c.classList.remove("sel"); c.querySelector(".tick").textContent = "";
   });
   updateFoot();
 }
+
+$("#listWrap").tabIndex = 0;
+$("#grid").tabIndex = 0;
+function mediaKeydown(event) {
+  const keys = ["ArrowUp", "ArrowDown", "PageUp", "PageDown"];
+  if (!event.shiftKey || !keys.includes(event.key) || !state.shown.length) return;
+  event.preventDefault();
+  const current = Math.max(0, state.shown.findIndex(i => i.path === state.focusPath));
+  const next = Math.max(0, Math.min(state.shown.length - 1, current +
+    (event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : event.key === "PageUp" ? -10 : 10)));
+  selectWithModifiers(state.shown[next].path, {shiftKey: true});
+  const row = document.querySelector(`#mediaBody tr[data-path="${cssEscape(state.focusPath)}"]`);
+  if (row) { row.focus(); row.scrollIntoView({block: "nearest"}); }
+  const card = document.querySelector(`.card[data-path="${cssEscape(state.focusPath)}"]`);
+  if (card) { card.tabIndex = 0; card.focus(); card.scrollIntoView({block: "nearest"}); }
+}
+$("#listWrap").addEventListener("keydown", mediaKeydown);
+$("#grid").addEventListener("keydown", mediaKeydown);
+$("#btnVerify").onclick = async () => {
+  const r = await api("/api/verify", {paths: [...state.selected]});
+  const matches = r.selected_paths && r.selected_paths.length === state.selected.size &&
+    r.selected_paths.every(p => state.selected.has(p));
+  state.lastVerifiedSelection = r.ok && matches ? r.selected_paths : null;
+  toast(r.ok && matches ? `Verified ${r.expected} selected files. SHA-256 and size checks passed.` :
+    (r.ok ? "Verification belongs to a different selection. Export the current selection first." : r.error), r.ok && matches ? "ok" : "err");
+  updateFoot();
+};
+$("#btnCleanup").onclick = async () => {
+  const selection = [...state.selected].sort();
+  if (!state.lastVerifiedSelection || JSON.stringify(selection) !== JSON.stringify([...state.lastVerifiedSelection].sort())) {
+    toast("Select exactly the files from the last verified export first.", "err"); return;
+  }
+  const confirmation = prompt("This permanently deletes the selected originals from the iPhone. Ensure a second backup exists. Type DELETE to continue:");
+  if (confirmation !== "DELETE") return;
+  const r = await api("/api/cleanup", {paths: selection, confirm: confirmation});
+  state.lastVerifiedSelection = null;
+  toast(r.message, r.ok ? "ok" : "err");
+  if (r.deleted) await connect();
+  updateFoot();
+};
 
 // ---------- preview ----------
 async function openPreview(path, confirm) {
@@ -520,6 +707,19 @@ async function openPreview(path, confirm) {
       <div class="kv"><span>Type</span><span>${r.kind_label}</span></div>
       <div class="kv"><span>Status</span><span>${state.selected.has(path) ? "selected for export" : "not selected"}</span></div>`;
     syncDrawerButton();
+    const metadata = await api("/api/metadata?path=" + encodeURIComponent(path));
+    it.created = metadata.metadata.Created;
+    it.location = metadata.metadata.Location;
+    it.metadata = metadata.metadata;
+    Object.entries(metadata.metadata).forEach(([key, value]) => {
+      const row = document.createElement("div"); row.className = "kv";
+      const label = document.createElement("span"); label.textContent = key;
+      const val = document.createElement("span");
+      val.textContent = typeof value === "object" ? JSON.stringify(value, null, 2) : String(value);
+      val.style.whiteSpace = "pre-wrap"; val.style.overflowWrap = "anywhere";
+      row.append(label, val); $("#pvMeta").appendChild(row);
+    });
+    renderGrid();
   } catch (e) {
     $("#pv").innerHTML = `<span class="muted">${e.message}</span>`;
   }
@@ -540,7 +740,7 @@ async function doExport() {
   banner("Exporting…", "warn");
   $("#btnExport").disabled = true;
   try {
-    await api("/api/export", {paths});
+    await api("/api/export", {paths, layout: $("#exportLayout").value});
     pollJob();
   } catch (e) { banner(e.message, "err"); $("#btnExport").disabled = false; }
 }
@@ -562,7 +762,7 @@ async function pollJob() {
       const ok = j.safe_to_delete;
       const note = j.note ? `<div style="margin-top:8px;border-top:1px solid #ffffff22;padding-top:8px">${j.note}</div>` : "";
       banner(
-        `<b>${ok ? "Export verified" : "Export finished with problems"}</b><br>
+        `<b>${ok ? "Export complete — click Verify before cleanup" : "Export finished with problems"}</b><br>
          copied ${j.copied} · resumed ${j.resumed} · failed ${j.failed} ·
          missing ${j.missing} · size mismatch ${j.mismatch} ·
          hash mismatch ${j.hash_mismatch || 0} · ${j.seconds}s<br>

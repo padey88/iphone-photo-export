@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only iPhone photo/video exporter with resume, manifest and verification.
+"""Read-only command-line iPhone photo/video exporter with resume and verification.
 
 Pulls /DCIM (camera roll) from a USB-connected, trusted iPhone to a local folder,
 writes a SHA-256 manifest, and verifies every file before you delete anything on

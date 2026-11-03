@@ -1,12 +1,13 @@
 # iPhone Photo Export
 
 **Offload photos and videos from a USB-connected iPhone to a Windows PC — as a normal
-installed desktop app, with SHA-256 verification before you delete anything on the phone.**
+installed desktop app, with SHA-256 verification before any optional deletion on the phone.**
 
 One 144 MB installer. No Python, no iTunes, no command line, no iCloud. Double-click, plug in
 the cable, tap Trust, export.
 
-Read-only on the device: it never deletes, moves or renames anything on the iPhone.
+The command-line exporter is read-only on the device. The desktop app's optional cleanup
+is separate, verification-gated and not yet tested on a physical iPhone.
 Built for the case where iCloud is on the free 5 GB tier, so the phone holds the only copy.
 
 ![Main window](docs/screenshots/01-main-window.png)
@@ -86,7 +87,10 @@ read from the phone. If two phones are connected you are asked which one.
 
 ### 2. Pick what to export
 
-Everything in the left sidebar is a filter; the grid updates as you change it.
+See [docs/USAGE.md](docs/USAGE.md) for the complete category/unified views,
+keyboard selection, saved destinations, structured exports and optional cleanup flow.
+
+Everything in the left sidebar is a filter; the list or grid updates as you change it.
 
 **Presets** — one click for the common jobs:
 
@@ -186,15 +190,21 @@ Lightning iPhones typically move 1–3 GB/min, so 100 GB is roughly 1–2 hours.
 
 ## The safe-delete workflow
 
-The app never deletes anything on the phone. Do this yourself, in order:
+Browsing, preview and export never modify originals. After a successful export, the optional
+**Delete verified originals** action requires the exact verified selection and typed `DELETE`
+confirmation. The app freshly checks local size/SHA-256 and current device size/mtime before each
+single-file deletion; failures leave the original in place and are reported.
 
-1. `VERIFY.txt` shows **0** failed, **0** missing, **0** mismatch.
+Keep this conservative checklist:
+
+1. `VERIFY.txt` shows **0** failed, **0** missing, **0** mismatch, and **Verify** passes.
 2. Play 5 random videos from the export folder — catches files that copied but are corrupt.
 3. Copy the folder to a **second** drive (the phone was the only copy; now the PC is).
-4. Only then delete on the iPhone, and empty **Recently Deleted** (iOS holds files 30 days, so
-   the space is not actually freed until you do).
+4. Only then use the optional cleanup action, or delete manually on the iPhone. Empty
+   **Recently Deleted** if iOS retains the files.
 5. Confirm in Settings > General > iPhone Storage.
 
+The optional AFC deletion path is synthetic-device tested, not yet physical-iPhone tested.
 Delete in batches — a month or a year at a time — and re-check after each batch. Skipping step 3
 only moves the single point of failure from the phone to one hard disk.
 

@@ -52,6 +52,31 @@ for d in (THUMBS, MEDIA):
 THUMB_PX = 480
 VIDEO_CONFIRM_MB = 150
 
+PREFS_PATH = CACHE / "preferences.json"
+
+
+def read_prefs() -> dict:
+    try:
+        data = json.loads(PREFS_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            if not isinstance(data.get("favorites", []), list):
+                return {"default_dest": str(data.get("default_dest") or ""), "favorites": []}
+            return {"default_dest": str(data.get("default_dest") or ""),
+                    "favorites": [str(p) for p in data["favorites"] if isinstance(p, str)][:30]}
+    except (OSError, ValueError, TypeError):
+        pass
+    return {"default_dest": "", "favorites": []}
+
+
+def write_prefs(prefs: dict) -> None:
+    tmp = PREFS_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(prefs, indent=2), encoding="utf-8")
+    tmp.replace(PREFS_PATH)
+
+
+PREFS = read_prefs()
+_default_dest = PREFS["default_dest"] or os.environ.get(
+    "IPHONE_EXPORT_DEST", Path.home() / "Pictures" / "iPhone-Export")
 app = Flask(__name__, static_folder=str(APP_DIR / "static"),
             static_url_path="/static", template_folder=str(APP_DIR / "templates"))
 
@@ -60,8 +85,7 @@ STATE: dict = {
     "inventory": [],          # raw items from device
     "classified": [],         # annotated
     "exported_index": {},
-    "dest": Path(os.environ.get("IPHONE_EXPORT_DEST",
-                                Path.home() / "Pictures" / "iPhone-Export")).expanduser(),
+    "dest": Path(_default_dest).expanduser(),
     "job": None,
     "last_export": None,
     "run_id": None,
@@ -107,8 +131,10 @@ def api_state():
     STATE["last_ping"] = time.time()
     return jsonify({
         "connected": bridge.connected,
+        "status_text": f"{bridge.info.get('model', 'iPhone')} · iOS {bridge.info.get('ios') or 'unknown'} · {bridge.info.get('name', '')}" if bridge.connected else "iPhone not detected",
         "device": bridge.info,
         "dest": str(STATE["dest"]),
+        "preferences": PREFS,
         "presets": filters.suggest_presets(),
         "kinds": [
             {"id": "photo", "label": "Photos"},
@@ -204,7 +230,19 @@ def api_config():
             item["exported"] = bool(previous
                                     and int(previous["size"]) == item["size"]
                                     and int(previous.get("mtime_epoch") or 0) == item["mtime"])
-    return jsonify({"dest": str(STATE["dest"])})
+    if payload.get("save_default") or payload.get("favorite") or payload.get("remove_favorite"):
+        candidate = (payload.get("remove_favorite") if payload.get("remove_favorite") else
+                     payload.get("favorite") if isinstance(payload.get("favorite"), str)
+                     else STATE["dest"])
+        candidate = str(Path(candidate).expanduser())
+        favorites = [p for p in PREFS["favorites"] if p != candidate]
+        if payload.get("favorite"):
+            favorites.append(candidate)
+        PREFS["favorites"] = favorites[-30:]
+        if payload.get("save_default"):
+            PREFS["default_dest"] = str(STATE["dest"])
+        write_prefs(PREFS)
+    return jsonify({"dest": str(STATE["dest"]), "preferences": PREFS})
 
 
 # ------------------------------------------------------------------ preview
@@ -342,6 +380,147 @@ def api_preview():
     })
 
 
+def extract_metadata(item: dict, media: Path) -> dict:
+    """Return available fields; AFC does not expose Photos albums or EXIF GPS."""
+    data = {
+        "Filename": item["name"], "Device path": item["path"],
+        "Created": "Unavailable from AFC (EXIF may provide capture time)",
+        "Modified": item["date"], "Albums": "Unavailable through USB camera-roll access",
+        "Size": f"{item['mb']} MB", "Location": "Unavailable in current metadata",
+        "Category": item["kind"], "Format": item["ext"], "Source": "iPhone DCIM via AFC",
+    }
+    if item["is_video"]:
+        data["EXIF"] = "Not extracted for video"
+        return data
+    try:
+        from PIL import ExifTags
+        with Image.open(media) as image:
+            exif = image.getexif()
+            raw = {ExifTags.TAGS.get(k, str(k)): v for k, v in exif.items()}
+            capture = raw.get("DateTimeOriginal") or raw.get("DateTimeDigitized") or raw.get("DateTime")
+            if capture:
+                data["Created"] = str(capture)
+            gps = raw.get("GPSInfo")
+            if gps:
+                data["Location"] = json.dumps({str(ExifTags.GPSTAGS.get(k, k)): str(v) for k, v in gps.items()})
+            data["EXIF"] = {str(k): str(v)[:1000] for k, v in raw.items()}
+    except Exception as exc:
+        data["Metadata error"] = str(exc)
+    return data
+
+
+@app.get("/api/metadata")
+def api_metadata():
+    item = find_item(request.args.get("path", ""))
+    if not item:
+        return jsonify({"error": "unknown item"}), 404
+    media = ensure_media(item)
+    if not media:
+        return jsonify({"error": "could not read file from device"}), 500
+    return jsonify({"path": item["path"], "metadata": extract_metadata(item, media)})
+
+
+def verification_payload(job: dict | None = None) -> dict:
+    job = job or STATE.get("last_export")
+    if not job or job.get("state") != "done":
+        return {"state": "unavailable", "ok": False, "selected_paths": [],
+                "error": "Complete an export before verification."}
+    if not job.get("out_dir") or not isinstance(job.get("verification_rows"), list):
+        return {"state": "unavailable", "ok": False, "selected_paths": [],
+                "error": "The current export has no complete verification manifest."}
+    return {"state": "done", "ok": job.get("safe_to_delete", False),
+            "run_id": job.get("id"), "expected": job.get("total", 0),
+            "selected_paths": job.get("selected_paths", []),
+            "copied": job.get("copied", 0), "resumed": job.get("resumed", 0),
+            "failed": job.get("failed", 0), "missing": job.get("missing", 0),
+            "mismatch": job.get("mismatch", 0),
+            "hash_mismatch": job.get("hash_mismatch", 0),
+            "missing_hash": job.get("missing_hash", 0),
+            "out_dir": job.get("out_dir")}
+
+
+def reverify_job(job: dict, paths: list[str]) -> dict:
+    """Freshly check the exact run against its own rows, never broad history."""
+    result = verification_payload(job)
+    if len(paths) != len(set(paths)) or set(paths) != set(result["selected_paths"]):
+        return {**result, "ok": False, "error": "Verification must match the exact exported selection."}
+    by_path = {i["path"]: i for i in STATE["classified"]}
+    if set(paths) - by_path.keys():
+        return {**result, "ok": False, "error": "The selection is stale; refresh first."}
+    check = exporter.verify_items([by_path[p] for p in paths], Path(job["out_dir"]),
+                                  job.get("verification_rows", []))
+    result.update({"ok": check["ok"] and job.get("failed") == 0,
+                   "missing": len(check["missing"]), "mismatch": len(check["mismatch"]),
+                   "hash_mismatch": len(check["hash_mismatch"]),
+                   "missing_hash": len(check["missing_hash"])})
+    if not result["ok"]:
+        result["error"] = "Verification failed; original files must not be deleted."
+    return result
+
+
+@app.post("/api/verify")
+def api_verify():
+    job = STATE.get("last_export")
+    result = verification_payload(job)
+    if not job or job.get("state") != "done":
+        return jsonify(result), 409
+    paths = (request.get_json(silent=True) or {}).get("paths", result["selected_paths"])
+    if not isinstance(paths, list):
+        return jsonify({**result, "ok": False, "error": "Invalid selection."}), 400
+    result = reverify_job(job, paths)
+    return jsonify(result), 200 if result["ok"] else 409
+
+
+@app.post("/api/cleanup")
+def api_cleanup():
+    payload = request.get_json(silent=True) or {}
+    if payload.get("confirm") != "DELETE":
+        return jsonify({"error": "Type DELETE to confirm original-file removal."}), 400
+    if STATE.get("run_id"):
+        return jsonify({"error": "An export is running; cleanup is blocked."}), 409
+    job = STATE.get("last_export")
+    paths = payload.get("paths")
+    if not job or not isinstance(paths, list):
+        return jsonify({"error": "A completed export and exact selection are required."}), 409
+    check = reverify_job(job, paths)
+    if not check["ok"]:
+        return jsonify({"error": check.get("error", "Cleanup blocked by verification.")}), 409
+    by_path = {i["path"]: i for i in STATE["classified"]}
+    if set(paths) - by_path.keys():
+        return jsonify({"error": "Selection is stale; refresh and verify again."}), 409
+    deleted, failed = [], []
+    for path in dict.fromkeys(paths):
+        try:
+            item = by_path[path]
+            current = bridge.file_state(path)
+            if current["size"] != item["size"] or current["mtime"] != item["mtime"]:
+                raise DeviceError("Original changed after export; refresh and export again before deleting.")
+            bridge.delete_file(path)
+            deleted.append(path)
+        except Exception as exc:
+            failed.append({"path": path, "error": str(exc)})
+    if deleted:
+        out_dir = Path(check["out_dir"])
+        with (out_dir / "CLEANUP.txt").open("a", encoding="utf-8") as fh:
+            fh.write(f"verified run: {check['run_id']}\n")
+            fh.write("deleted originals:\n" + "\n".join(deleted) + "\n")
+    if deleted:
+        refresh_error = None
+        try:
+            refresh_inventory()
+        except DeviceError as exc:
+            refresh_error = str(exc)
+    else:
+        refresh_error = None
+    message = (f"Deleted {len(deleted)} verified originals." if deleted else "No originals deleted.")
+    if failed:
+        message += f" {len(failed)} were left on the iPhone; see errors."
+    if refresh_error:
+        message += f" Refresh failed: {refresh_error}"
+    return jsonify({"ok": not failed and not refresh_error, "deleted": len(deleted),
+                    "failed": failed, "message": message})
+
+
 VIDEO_THUMB_MAX_MB = 250   # pull-at-most for a video poster frame
 
 
@@ -374,7 +553,8 @@ def api_media(token: str):
 
 
 # ------------------------------------------------------------------- export
-def run_export(run_id: str, items: list[dict], dest: Path, udid: str, job: dict) -> None:
+def run_export(run_id: str, items: list[dict], dest: Path, udid: str, job: dict,
+               layout: str = "source") -> None:
     out_dir = dest / udid
 
     def on_progress(p):
@@ -384,7 +564,7 @@ def run_export(run_id: str, items: list[dict], dest: Path, udid: str, job: dict)
         job.setdefault("errors", []).append({"path": path, "error": msg})
 
     try:
-        result = bridge.export_items(items, out_dir, on_progress, on_error)
+        result = bridge.export_items(items, out_dir, on_progress, on_error, layout)
         verification = exporter.verify_items(items, out_dir, result["rows"])
         exporter.write_manifest(result["rows"], out_dir / "manifest.csv")
         exporter.write_manifest(result["rows"], out_dir / "history" / f"{run_id}.csv")
@@ -398,6 +578,7 @@ def run_export(run_id: str, items: list[dict], dest: Path, udid: str, job: dict)
             "hash_mismatch": len(verification["hash_mismatch"]),
             "missing_hash": len(verification["missing_hash"]),
             "safe_to_delete": verification["ok"] and failures == 0,
+            "verification_rows": result["rows"],
             "out_dir": str(out_dir), "seconds": round(time.time() - job["started"], 1),
         })
         if failures:
@@ -426,6 +607,9 @@ def api_export():
     paths = payload.get("paths")
     if not isinstance(paths, list) or not paths or not all(isinstance(p, str) for p in paths):
         return jsonify({"error": "select at least one file"}), 400
+    layout = payload.get("layout", "source")
+    if layout not in ("source", "category", "date"):
+        return jsonify({"error": "choose a valid folder layout"}), 400
     with LOCK:
         if STATE.get("shutdown_requested"):
             return jsonify({"error": "the app is shutting down"}), 409
@@ -441,11 +625,12 @@ def api_export():
         run_id = f"{int(time.time())}-{os.getpid()}-{threading.get_ident()}"
         job = {"id": run_id, "state": "running", "total": len(items), "done": 0,
                "copied": 0, "resumed": 0, "failed": 0, "bytes": 0,
-               "current": "", "started": time.time()}
+               "current": "", "started": time.time(), "layout": layout,
+               "selected_paths": [i["path"] for i in items]}
         STATE.update({"run_id": run_id, "job_id": run_id, "job": job})
         dest, udid = STATE["dest"], bridge.udid or "device"
     t = threading.Thread(target=run_export,
-                         args=(run_id, items, dest, udid, job),
+                         args=(run_id, items, dest, udid, job, layout),
                          daemon=True, name=f"export-{run_id}")
     STATE["job_thread"] = t
     t.start()

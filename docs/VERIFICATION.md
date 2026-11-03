@@ -2,7 +2,12 @@
 
 What has actually been executed, what has not, and why. Updated with each release.
 
-Last run: 2026-11-03, Windows 11 build 26200, clean VM, installer v1.0.2
+Last run: 2026-11-03, source workflow update after v1.0.2, Linux host and
+browser-harness synthetic device. Exact-selection verification, guarded cleanup,
+category/all views, list/grid, keyboard selection, metadata and structured export
+passed. This section does not assert a new frozen installer or physical-device result.
+
+Previous installer run: 2026-11-03, Windows 11 build 26200, clean VM, installer v1.0.2
 (`iPhonePhotoExport-1.0.2-Setup.exe`, 150,585,154 bytes, SHA-256
 `f54798993b566d065372caefdcee0d5a51cdf4bfbacd86d1fcf205d5085b1a37`).
 
@@ -54,6 +59,14 @@ No physical iPhone was attached; the hardware boundary below still applies.
 | Preview cache respects budget | seed 6×1MB, budget 3MB | trimmed to 2.0MB, oldest evicted |
 | Dead export thread does not wedge | fake `is_alive()=False` | new export accepted (200) |
 | Live export still blocks a second | fake `is_alive()=True` / run lock | 409 |
+| Eight-step workflow | `tests/test_workflow.py` | preferences, metadata, date layout, verify, guarded synthetic cleanup |
+| Changed original after verification | synthetic size/mtime change | original preserved, failure reported |
+| Invalid cleanup request | wrong confirmation / stale or failed job | 400/409, no deletion |
+| Category/unified browser views | browser-harness synthetic device | Photos=2, All=3 including valid video |
+| List selection and sorting | browser-harness | select-all, Ctrl/Shift, Shift+Arrow passed |
+| In-app preview | synthetic image and ffmpeg-generated MOV | image and video playback + metadata |
+| Structured export and Verify | browser-harness | date/source export, exact current selection, SHA-256 pass |
+| Filter response ordering | rapid connect/view change | stale response ignored |
 | Device change after browsing | `tests/test_integrity.py` | fresh transfer, not stale resume |
 | Local content tampering | `tests/test_integrity.py` | SHA-256 mismatch reported |
 | Filtered export history | `tests/test_integrity.py` | successful history retained |

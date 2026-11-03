@@ -8,17 +8,23 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
-- Age-based date presets (older than 1 / 2 / 5 years) using calendar-month
-  cutoffs with month-end handling, plus an explicit user-chosen **before this
-  date** bound.
+- Age-based date presets (before 1 / 3 / 6 / 9 months and 1 year) using
+  calendar-month cutoffs with month-end handling, plus an explicit custom
+  **before this date** picker.
+- Persistent default export destination and favorite-folder picker.
+- Category/unified views, sortable details list and thumbnail view, keyboard
+  selection, double-click preview and complete available image metadata.
+- Explicit current-selection verification and an optional, typed-confirmation
+  cleanup action. Cleanup re-verifies size/SHA-256 and blocks originals changed
+  after export; successful deletions are recorded in `CLEANUP.txt`.
 - Alternative export layouts: `category` (Photos, Live Photos, Videos, Screen
   Recordings, Screenshots, Live Photo Videos, Other) and `date` (`YYYY-MM/`),
   alongside the default `source` layout that mirrors the device's DCIM tree.
 - Collision handling: a second file with the same name is written as
   `name (2).ext` instead of overwriting the first.
 - Single-file deletion on the device, gated behind the verification result and
-  restricted to media extensions directly under `/DCIM/` — `..`, nested paths,
-  and directories are refused.
+  restricted to individual media files below `/DCIM/` — `..`, directories and
+  non-media paths are refused.
 
 ### Changed
 - The export worker carries the layout parameter end to end
