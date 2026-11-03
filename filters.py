@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import posixpath
+from calendar import monthrange
 from datetime import datetime, time, timedelta
 
 IMAGE_EXT = {".jpg", ".jpeg", ".heic", ".heif", ".png", ".gif", ".tif", ".tiff", ".dng"}
@@ -107,7 +108,11 @@ def apply_filters(items: list[dict], spec: dict) -> list[dict]:
         t = it["mtime"]
         if lo is not None and t < lo:
             continue
-        if hi is not None and t > hi:
+        # "Before <date>" means strictly before that calendar day, not before
+        # its final second. This makes the cutoff intuitive and unambiguous.
+        if mode == "older" and t >= hi:
+            continue
+        if mode != "older" and hi is not None and t > hi:
             continue
         if kinds and it["kind"] not in kinds:
             continue
@@ -159,17 +164,30 @@ def summarize(items: list[dict]) -> dict:
     }
 
 
+def _months_ago(today: datetime, months: int) -> str:
+    """Calendar-month cutoff, clamped to the last valid day of that month."""
+    month_index = today.year * 12 + today.month - 1 - months
+    year, month_zero = divmod(month_index, 12)
+    month = month_zero + 1
+    day = min(today.day, monthrange(year, month)[1])
+    return f"{year:04d}-{month:02d}-{day:02d}"
+
+
 def suggest_presets(today: datetime | None = None) -> list[dict]:
     today = today or datetime.now()
-    y = today.year
-    return [
-        {"id": "older_jan1", "label": f"Older than 1 Jan {y}",
-         "spec": {"date_mode": "older", "date": f"{y}-01-01"}},
-        {"id": "older_last_year", "label": f"Older than 1 Jan {y - 1}",
-         "spec": {"date_mode": "older", "date": f"{y - 1}-01-01"}},
-        {"id": "last_30", "label": "Last 30 days",
-         "spec": {"date_mode": "newer",
-                  "date": (today - timedelta(days=30)).strftime("%Y-%m-%d")}},
+    age_presets = [
+        {"id": "before_1_month", "label": "Before 1 month ago",
+         "spec": {"date_mode": "older", "date": _months_ago(today, 1)}},
+        {"id": "before_3_months", "label": "Before 3 months ago",
+         "spec": {"date_mode": "older", "date": _months_ago(today, 3)}},
+        {"id": "before_6_months", "label": "Before 6 months ago",
+         "spec": {"date_mode": "older", "date": _months_ago(today, 6)}},
+        {"id": "before_9_months", "label": "Before 9 months ago",
+         "spec": {"date_mode": "older", "date": _months_ago(today, 9)}},
+        {"id": "before_1_year", "label": "Before 1 year ago",
+         "spec": {"date_mode": "older", "date": _months_ago(today, 12)}},
+    ]
+    return age_presets + [
         {"id": "not_exported", "label": "Not yet exported",
          "spec": {"date_mode": "all", "exported": "no"}},
         {"id": "big_videos", "label": "Videos over 100 MB",

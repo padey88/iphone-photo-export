@@ -117,13 +117,15 @@
     <div class="row">
       <select id="dateMode">
         <option value="all">All dates</option>
-        <option value="older">Older than</option>
+        <option value="older">Custom: before date</option>
         <option value="newer">Newer than</option>
         <option value="between">Between</option>
       </select>
     </div>
     <div class="row" id="rowDate1">
-      <input type="date" id="date1" value="2026-01-01">
+      <label class="muted" for="date1" id="date1Label" style="width:100%">Before
+        <input type="date" id="date1" aria-label="Custom before date" style="margin-top:5px;width:100%">
+      </label>
     </div>
     <div class="row hidden" id="rowDate2">
       <input type="date" id="date2"> <span class="muted">to</span>
@@ -243,6 +245,7 @@ function renderPresets(presets) {
     const b = document.createElement("div");
     b.className = "chip";
     b.textContent = p.label;
+    b.title = p.spec.date ? `Files before ${p.spec.date}` : p.label;
     b.onclick = () => { applyPreset(p.spec); };
     $("#presets").appendChild(b);
   });
@@ -282,6 +285,8 @@ function toggleDateRows() {
   const m = $("#dateMode").value;
   $("#rowDate1").classList.toggle("hidden", m === "all");
   $("#rowDate2").classList.toggle("hidden", m !== "between");
+  $("#date1Label").firstChild.textContent =
+    m === "older" ? "Before" : m === "newer" ? "On or after" : m === "between" ? "From" : "Date";
 }
 
 function currentSpec() {

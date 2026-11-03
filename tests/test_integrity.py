@@ -81,9 +81,9 @@ def test_device_path_cannot_escape_destination(tmp_path):
         exporter.local_path_for(tmp_path, "/DCIM/../../outside.jpg")
 
 
-def test_last_30_days_is_not_today():
+def test_one_month_preset_uses_calendar_month():
     presets = filters.suggest_presets(datetime(2026, 11, 3))
-    assert next(p for p in presets if p["id"] == "last_30")["spec"]["date"] == "2026-10-04"
+    assert next(p for p in presets if p["id"] == "before_1_month")["spec"]["date"] == "2026-10-03"
 
 
 def test_inventory_failure_is_not_an_empty_library(roll):
@@ -140,6 +140,30 @@ def test_export_lock_rejects_double_submission(tmp_path):
                 webapp.STATE["run_id"] = None
                 webapp.STATE["job"] = None
         webapp.bridge.disconnect()
+
+
+def test_age_presets_and_custom_before_filter():
+    presets = filters.suggest_presets(datetime(2026, 3, 31))
+    age = presets[:5]
+    assert [p["label"] for p in age] == [
+        "Before 1 month ago", "Before 3 months ago", "Before 6 months ago",
+        "Before 9 months ago", "Before 1 year ago",
+    ]
+    assert [p["spec"]["date"] for p in age] == [
+        "2026-02-28", "2025-12-31", "2025-09-30", "2025-06-30", "2025-03-31",
+    ]
+    assert all(p["spec"]["date_mode"] == "older" for p in age)
+
+    def item(name, date):
+        return {"path": name, "name": name, "mtime": datetime.fromisoformat(date).timestamp(),
+                "size": 1, "ext": ".jpg", "kind": "photo", "exported": False,
+                "mb": 0, "dir": "/DCIM", "stem": name}
+
+    items = [item("old.JPG", "2025-01-01"), item("cutoff.JPG", "2025-06-30"),
+             item("new.JPG", "2026-01-01")]
+    picked = filters.apply_filters(items, {"date_mode": "older", "date": "2025-06-30",
+                                          "keep_pairs": False})
+    assert [i["name"] for i in picked] == ["old.JPG"]
 
 
 def test_device_utc_naive_datetime_is_not_shifted(roll):

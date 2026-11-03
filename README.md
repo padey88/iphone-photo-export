@@ -93,12 +93,15 @@ Everything in the left sidebar is a filter; the grid updates as you change it.
 ![Preset: videos over 100 MB](docs/screenshots/02-preset-big-videos.png)
 
 ```
-Older than 1 Jan <year>      everything from previous years (the usual "free up space" run)
-Older than 1 Jan <year-1>    the year before that
-Last 30 days                 just-taken photos, e.g. to hand off
-Not yet exported             only files this app has never copied
-Videos over 100 MB           the space hogs
-Everything                   no filter
+Before 1 month ago            files strictly before this calendar date
+Before 3 months ago           same date three calendar months earlier
+Before 6 months ago           same date six calendar months earlier
+Before 9 months ago           same date nine calendar months earlier
+Before 1 year ago             same date one calendar year earlier
+Custom: before date            choose any cutoff date in the Date section
+Not yet exported              only files this app has never copied
+Videos over 100 MB            the space hogs
+Everything                    no filter
 ```
 
 **Type** — Photos, Live Photos, Videos, Screen recordings, Screenshots:
