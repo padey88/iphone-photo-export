@@ -28,7 +28,7 @@ This app is the missing middle: free, open source, and built around one question
 
 ## Install (Windows 10/11, 64-bit)
 
-1. Download `iPhonePhotoExport-1.0.0-Setup.exe` from [Releases](../../releases/latest).
+1. Download `iPhonePhotoExport-1.0.1-Setup.exe` from [Releases](../../releases/latest).
 2. Run it. Windows asks for administrator rights once, to install Apple's USB device driver.
 3. Done — an **iPhone Photo Export** shortcut is on the desktop and in the Start menu.
 
@@ -66,7 +66,7 @@ Installer size is 144 MB: ffmpeg (~100 MB), the Apple driver (34 MB), and the Py
 ### Download
 
 [Latest release](../../releases/latest) · 144 MB · SHA-256
-`cb161a4bff8493ef3241c7a5d615279dd5532dd04dbad00e564c28d4a38b3e2b`
+`a7b06a5b110699c7392df7f92895be174a301f7d1302e3ae37c5ba13018ec5a0`
 
 The build is unsigned, so SmartScreen may warn — *More info* > *Run anyway*, and check the hash
 above with `certutil -hashfile <file> SHA256`.

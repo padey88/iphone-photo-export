@@ -2,8 +2,8 @@
 
 What has actually been executed, what has not, and why. Updated with each release.
 
-Last run: 2026-11-03, Windows 11 build 26200, clean VM, installer built from commit
-`33a91b0`+.
+Last run: 2026-11-03, Windows 11 build 26200, clean VM, installer v1.0.1
+(`iPhonePhotoExport-1.0.1-Setup.exe`, SHA-256 `a7b06a5b...18ec5a0`).
 
 ## Verified by execution
 
