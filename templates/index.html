@@ -555,6 +555,7 @@ async function pollJob() {
     if (j.state === "done") {
       $("#barText").textContent = "done";
       const ok = j.safe_to_delete;
+      const note = j.note ? `<div style="margin-top:8px;border-top:1px solid #ffffff22;padding-top:8px">${j.note}</div>` : "";
       banner(
         `<b>${ok ? "Export verified" : "Export finished with problems"}</b><br>
          copied ${j.copied} · resumed ${j.resumed} · failed ${j.failed} ·
@@ -566,7 +567,7 @@ async function pollJob() {
            <li>Play 5 random videos from this folder</li>
            <li>Copy the folder to an external drive</li>
            <li>Delete on iPhone, then empty Recently Deleted</li>
-         </ol>`, ok ? "ok" : "err");
+         </ol>${note}`, ok ? "ok" : "err");
       await refresh();
     } else if (j.state === "error") {
       banner("Export failed: " + j.error, "err");
@@ -601,6 +602,10 @@ $("#dateMode").onchange = () => { toggleDateRows(); applyFilters(); };
 });
 $("#keepPairs").onchange = applyFilters;
 let qt; $("#q").oninput = () => { clearTimeout(qt); qt = setTimeout(applyFilters, 300); };
+
+// Keep the server alive only while this tab is open: in browser-fallback mode
+// (no WebView2) the server exits when the page stops checking in.
+setInterval(() => { fetch("/api/ping").catch(() => {}); }, 5000);
 
 boot();
 </script>

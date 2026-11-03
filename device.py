@@ -171,8 +171,32 @@ class DeviceBridge:
         else:
             raise DeviceError("Two or more phones are connected - choose one.")
 
-        self._lockdown = await create_using_usbmux(serial=chosen["udid"])
-        self._afc = await AfcService(lockdown=self._lockdown).__aenter__()
+        # The two failures users actually hit are an untrusted/locked phone and a
+        # pre-iOS-13 device that needs the developer disk image. Turn the raw
+        # exception into something actionable instead of surfacing a traceback.
+        try:
+            self._lockdown = await create_using_usbmux(serial=chosen["udid"])
+            self._afc = await AfcService(lockdown=self._lockdown).__aenter__()
+        except Exception as exc:
+            detail = f"{type(exc).__name__}: {exc}"
+            low = detail.lower()
+            self._lockdown = None
+            self._afc = None
+            if "password" in low or "trust" in low or "pair" in low or "not paired" in low:
+                raise DeviceError(
+                    "The iPhone has not trusted this PC yet. Unlock the phone, "
+                    "tap Trust on the prompt, then press Connect again. If no "
+                    f"prompt appears, unplug and replug the cable. Detail: {detail}") from exc
+            if "developer" in low or "disk image" in low or "dvt" in low:
+                raise DeviceError(
+                    "This iOS version needs Apple's developer disk image before "
+                    f"files can be read. Detail: {detail}") from exc
+            if "busy" in low or "invalid service" in low or "concurrent" in low:
+                raise DeviceError(
+                    "The phone is busy (another app is using it). Close iTunes, "
+                    "Photos, QuickTime, or any other tool holding the device, then "
+                    f"retry. Detail: {detail}") from exc
+            raise DeviceError(f"Could not open the iPhone's file service. Detail: {detail}") from exc
         self.udid = chosen["udid"]
         info = dict(chosen)
         try:

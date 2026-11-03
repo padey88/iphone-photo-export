@@ -106,9 +106,21 @@ check(p.get("ok") and p.get("kind") == "image", "image preview ok")
 t = client.get("/api/thumb?path=/DCIM/100APPLE/IMG_0001.JPG")
 check(t.status_code == 200 and t.mimetype == "image/jpeg", "thumbnail served as jpeg")
 tv = client.get("/api/thumb?path=/DCIM/100APPLE/IMG_0004.MP4")
-check(tv.status_code == 204, "video thumbnail skipped (204) to avoid pulling whole file")
+# Small videos now get a real poster frame; only very large clips are skipped
+# (pulling a multi-GB file for a 480px tile is not worth it).
+check(tv.status_code == 200 and tv.mimetype == "image/jpeg",
+      "video poster frame served for a small clip")
 v = client.post("/api/preview", json={"path": "/DCIM/100APPLE/IMG_0004.MP4"}).get_json()
 check(v.get("kind") == "video", "video preview prepared")
+
+# A clip above VIDEO_THUMB_MAX_MB must not be pulled for a thumbnail.
+import app as _app
+_big = _app.find_item("/DCIM/100APPLE/IMG_0004.MP4")
+_orig_mb = _big["mb"]
+_big["mb"] = _app.VIDEO_THUMB_MAX_MB + 1
+tbig = client.get("/api/thumb?path=/DCIM/100APPLE/IMG_0004.MP4")
+_big["mb"] = _orig_mb
+check(tbig.status_code == 204, "oversized video skips the poster frame (204)")
 
 print("export")
 paths = [i["path"] for i in f["items"]]

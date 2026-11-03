@@ -108,6 +108,26 @@ def start_server(port: int) -> threading.Thread:
     return t
 
 
+def existing_instance(port: int) -> bool:
+    """Is one of our servers already running on this port?
+
+    Double-clicking the shortcut twice must not start a second server with a
+    second cache: it should just raise the window that is already there.
+    """
+    import json
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/state", timeout=1.5) as r:
+            if r.status != 200:
+                return False
+            data = json.load(r)
+        # Only treat it as ours if it answers with our own state shape.
+        return "dest" in data and "kinds" in data
+    except Exception:
+        return False
+
+
 def wait_ready(port: int, timeout: float = 20.0) -> bool:
     import urllib.request
 
@@ -136,6 +156,36 @@ def open_window(url: str) -> bool:
     except Exception:
         log("pywebview failed:\n" + traceback.format_exc())
         return False
+
+
+def browser_mode(url: str, port: int, idle_timeout: float = 180.0) -> int:
+    """Fallback when there is no WebView2: open the browser, and exit when the
+    UI stops checking in.
+
+    Without this the process would sit in the background forever holding the
+    port, with no window, no tray icon and no way for the user to quit it. The
+    page pings /api/ping every few seconds; two minutes of silence means the tab
+    was closed and the server should go away. The clock starts immediately, so a
+    page that never connects also cannot pin the process open.
+    """
+    import app as webapp
+
+    # Seed the timestamp to now: the app module may have been imported long ago
+    # (or by a previous request), and a stale value would extend the deadline.
+    baseline = time.time()
+    webapp.STATE["last_ping"] = baseline
+    webbrowser.open(url)
+    log(f"browser mode: opened {url}; will exit after {int(idle_timeout)}s without a client")
+    deadline = baseline + 60  # grace for the browser to start and load the page
+    while True:
+        time.sleep(2)
+        seen = float(webapp.STATE.get("last_ping") or 0)
+        if seen > baseline:
+            baseline = seen
+            deadline = time.time() + idle_timeout
+        elif time.time() > deadline:
+            log(f"browser mode: no client for {int(idle_timeout)}s, exiting")
+            return 0
 
 
 def selftest() -> int:
@@ -226,7 +276,22 @@ def main() -> int:
         return selftest()
 
     prepare_env()
-    port = args.port or free_port(int(os.environ.get("IPHONE_EXPORT_PORT", 8765)))
+    default_port = int(os.environ.get("IPHONE_EXPORT_PORT", 8765))
+
+    # Second launch: hand off to the instance that is already running instead of
+    # starting a parallel server with its own cache. Checked against the fixed
+    # default port, before any ephemeral port is chosen.
+    if not args.port and existing_instance(default_port):
+        log(f"already running on {default_port}; asking that instance to show itself")
+        try:
+            import urllib.request
+            urllib.request.urlopen(f"http://127.0.0.1:{default_port}/api/raise", timeout=3).read()
+        except Exception:
+            pass
+        webbrowser.open(f"http://127.0.0.1:{default_port}/")
+        return 0
+
+    port = args.port or free_port(default_port)
     url = f"http://127.0.0.1:{port}/"
     log(f"starting {APP_NAME}: {url} (frozen={getattr(sys, 'frozen', False)})")
     start_server(port)
@@ -242,17 +307,11 @@ def main() -> int:
         except KeyboardInterrupt:
             return 0
 
-    if open_window(url) and not args.open_browser:
+    if not args.open_browser and open_window(url):
         log("window closed; exiting")
         return 0
 
-    webbrowser.open(url)
-    log("browser mode: keep this process alive; close it to stop the app")
-    try:
-        while True:
-            time.sleep(3600)
-    except KeyboardInterrupt:
-        return 0
+    return browser_mode(url, port)
 
 
 if __name__ == "__main__":

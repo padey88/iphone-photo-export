@@ -97,6 +97,7 @@ def index():
 
 @app.get("/api/state")
 def api_state():
+    STATE["last_ping"] = time.time()
     return jsonify({
         "connected": bridge.connected,
         "device": bridge.info,
@@ -217,14 +218,64 @@ def make_thumb(item: dict) -> Path | None:
     return thumb if thumb.exists() and thumb.stat().st_size > 0 else None
 
 
+CACHE_BUDGET_MB = int(os.environ.get("IPHONE_EXPORT_CACHE_MB", "3000"))
+CACHE_MAX_AGE_DAYS = 14
+
+
+def cache_gc() -> None:
+    """Keep the preview cache inside its budget.
+
+    Every preview pulls a full-resolution file off the phone. Browsing a 60 GB
+    library would otherwise fill C: silently, so the cache is capped (oldest
+    files first) and anything untouched for two weeks is dropped. Thumbnails
+    are kept: they are tiny and expensive to regenerate.
+    """
+    try:
+        files = [p for p in MEDIA.iterdir() if p.is_file()]
+    except OSError:
+        return
+    now = time.time()
+    budget = CACHE_BUDGET_MB * 1024 * 1024
+    total = 0
+    keep: list[tuple[float, Path, int]] = []
+    for p in files:
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        if now - st.st_mtime > CACHE_MAX_AGE_DAYS * 86400:
+            p.unlink(missing_ok=True)
+            continue
+        keep.append((st.st_mtime, p, st.st_size))
+        total += st.st_size
+    if total <= budget:
+        return
+    # delete oldest-accessed first until back under budget, keeping ~90%
+    keep.sort()
+    target = int(budget * 0.9)
+    for mtime, p, size in keep:
+        if total <= target:
+            break
+        p.unlink(missing_ok=True)
+        total -= size
+    for p in THUMBS.glob("*"):
+        try:
+            if now - p.stat().st_mtime > CACHE_MAX_AGE_DAYS * 86400:
+                p.unlink(missing_ok=True)
+        except OSError:
+            continue
+
+
 def ensure_media(item: dict) -> Path | None:
     """Pull the full file into the cache (needed for previews and video playback)."""
     ext = item.get("ext") or Path(item["path"]).suffix.lower()
     media = MEDIA / f"{token_for(item['path'])}{ext}"
     if media.exists() and media.stat().st_size == item["size"]:
+        media.touch()  # refresh mtime so GC sees it as recently used
         return media
     tmp = media.with_suffix(media.suffix + ".part")
     try:
+        cache_gc()
         bridge.pull(item["path"], tmp)
         if tmp.stat().st_size != item["size"]:
             tmp.unlink(missing_ok=True)
@@ -301,6 +352,7 @@ def run_export(paths: list[str], dest: Path, udid: str, job: dict) -> None:
 
     def on_progress(p):
         job.update(p)
+        STATE["last_ping"] = time.time()
 
     def on_error(path, msg):
         job.setdefault("errors", []).append({"path": path, "error": msg})
@@ -314,17 +366,27 @@ def run_export(paths: list[str], dest: Path, udid: str, job: dict) -> None:
         exporter.write_manifest(result["rows"], out_dir / "manifest.csv")
         exporter.write_report(out_dir / "VERIFY.txt", serial=udid, source="/DCIM",
                               copy_result=result, verification=verification)
+        # A cable yanked mid-transfer shows up as a burst of per-file failures.
+        # Say so explicitly: "5 failed" alone invites the user to retry blindly.
+        failures = result["failed"]
+        note = job.get("note")
+        if failures and failures >= max(3, len(items) // 5):
+            note = ("Many files failed — if the phone was unplugged or locked "
+                    "during the copy, reconnect it and export again. Everything "
+                    "already copied is kept and will be resumed, not re-downloaded.")
         job.update({
             "state": "done",
             "copied": result["copied"], "resumed": result["resumed"],
-            "failed": result["failed"],
+            "failed": failures,
             "verification": {k: v for k, v in verification.items() if k not in ("missing", "mismatch")},
             "missing": len(verification["missing"]),
             "mismatch": len(verification["mismatch"]),
-            "safe_to_delete": verification["ok"] and result["failed"] == 0,
+            "safe_to_delete": verification["ok"] and failures == 0,
             "out_dir": str(out_dir),
             "seconds": round(time.time() - job["started"], 1),
         })
+        if note:
+            job["note"] = note
         with LOCK:
             STATE["exported_index"] = exporter.already_exported_index(dest)
             STATE["last_export"] = job
@@ -343,18 +405,46 @@ def api_export():
     paths = payload.get("paths") or []
     if not paths:
         return jsonify({"error": "nothing selected"}), 400
-    if STATE["job"] and STATE["job"].get("state") == "running":
-        return jsonify({"error": "an export is already running"}), 409
+    job = STATE.get("job")
+    if job and job.get("state") == "running":
+        # Trust the thread, not the flag: an export whose thread died (crash,
+        # killed device) must not block every future export forever.
+        worker = STATE.get("job_thread")
+        if worker is not None and worker.is_alive():
+            return jsonify({"error": "an export is already running"}), 409
+        job.update({"state": "error", "error": "previous export died unexpectedly"})
     if not bridge.connected:
         return jsonify({"error": "not connected"}), 400
     job = {"state": "running", "total": len(paths), "done": 0,
            "copied": 0, "resumed": 0, "failed": 0, "bytes": 0,
            "current": "", "started": time.time()}
     STATE["job"] = job
-    threading.Thread(target=run_export,
-                     args=(paths, STATE["dest"], bridge.udid or "device", job),
-                     daemon=True).start()
+    STATE["last_ping"] = time.time()
+    t = threading.Thread(target=run_export,
+                         args=(paths, STATE["dest"], bridge.udid or "device", job),
+                         daemon=True)
+    STATE["job_thread"] = t
+    t.start()
     return jsonify({"ok": True, "job": job})
+
+
+@app.get("/api/ping")
+def api_ping():
+    """Liveness beacon from the UI, used to shut the server down when the
+    browser tab is closed (browser-fallback mode has no window to close)."""
+    STATE["last_ping"] = time.time()
+    return jsonify({"ok": True, "t": STATE["last_ping"]})
+
+
+@app.get("/api/raise")
+def api_raise():
+    """Another launch asked this instance to come to the front.
+
+    In windowed mode the desktop shell polls this and focuses the window; in
+    browser mode there is nothing to raise, so the caller opened a tab instead.
+    """
+    STATE["raise_requested"] = time.time()
+    return jsonify({"ok": True})
 
 
 @app.get("/api/export/status")
