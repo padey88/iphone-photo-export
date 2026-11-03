@@ -5,17 +5,18 @@ set -euo pipefail
 VM="${VM:-fadhilrashid@192.168.100.99}"
 DEST="${DEST:-C:/build/ipe/src}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+EXCLUDES=(--exclude=.venv --exclude=.venv-shot --exclude=__pycache__
+          --exclude=.pytest_cache --exclude=.git --exclude=payload
+          --exclude=installer --exclude=bin --exclude=.demo-iphone)
 
 echo "==> syncing $ROOT -> $VM:$DEST"
-tar czf - -C "$ROOT" \
-  --exclude=.venv --exclude=__pycache__ --exclude=.git \
-  --exclude=payload --exclude=installer --exclude=bin \
-  . | ssh "$VM" "powershell -NoProfile -Command \"New-Item -ItemType Directory -Force -Path '$DEST' | Out-Null; \$in=[Console]::OpenStandardInput(); \$fs=[IO.File]::Create('C:/build/ipe/src.tgz'); \$in.CopyTo(\$fs); \$fs.Close(); tar -xzf C:/build/ipe/src.tgz -C '$DEST'\"" 2>/dev/null || {
-    echo "tar not available on the VM; falling back to scp of a tarball"
-    tar czf /tmp/ipe_src.tgz -C "$ROOT" --exclude=.venv --exclude=__pycache__ --exclude=.git --exclude=payload --exclude=installer --exclude=bin .
-    scp -q /tmp/ipe_src.tgz "$VM:C:/build/ipe/src.tgz"
-    ssh "$VM" "cd /d C:\\build\\ipe && tar -xzf src.tgz -C src"
-  }
+# PowerShell native-command stdin can decode a pipe as text and corrupt a tar
+# archive. scp transports the archive byte-for-byte before extracting it.
+ARCHIVE="$(mktemp "${TMPDIR:-/tmp}/iphone-export-src.XXXXXX.tgz")"
+trap 'rm -f "$ARCHIVE"' EXIT
+tar czf "$ARCHIVE" -C "$ROOT" "${EXCLUDES[@]}" .
+scp -q "$ARCHIVE" "$VM:C:/build/ipe/src.tgz"
+ssh "$VM" "powershell -NoProfile -Command \"New-Item -ItemType Directory -Force -Path '$DEST' | Out-Null; tar -xzf C:/build/ipe/src.tgz -C '$DEST'; if (\$LASTEXITCODE -ne 0) { exit \$LASTEXITCODE }\""
 
 echo "==> syncing ffmpeg binaries ($(du -sh "$ROOT/bin" 2>/dev/null | cut -f1 || echo none))"
 if [ -d "$ROOT/bin" ]; then
