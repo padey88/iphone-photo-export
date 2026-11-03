@@ -4,7 +4,7 @@
 ; Built by build.ps1:  ISCC.exe /DAppVersion=x.y.z /DSourceDir=... installer.iss
 
 #ifndef AppVersion
-  #define AppVersion "1.0.0"
+  #define AppVersion "1.0.1"
 #endif
 #ifndef SourceDir
   #define SourceDir "..\payload\iPhonePhotoExport"

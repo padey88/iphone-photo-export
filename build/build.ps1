@@ -16,7 +16,7 @@ $Py = Join-Path $Venv "Scripts\python.exe"
 if (-not (Test-Path $Py)) { throw "venv missing: $Py (run setup.ps1 first)" }
 if (-not $Version) {
     $Version = (Get-Content (Join-Path $Root "VERSION") -ErrorAction SilentlyContinue)
-    if (-not $Version) { $Version = "1.0.0" }
+    if (-not $Version) { $Version = "1.0.1" }
 }
 $Version = $Version.Trim()
 
